@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+# Corpora, embeddings, and anything a run writes. Recordsets can hold
+# value-mode records, so none of this is committable.
+data/
+*.npy
+*.parquet

@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anatoolbox"
+version = "0.1.0"
+description = "A task-type framework for research and analytics agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Anacode GmbH" }]
+keywords = ["agents", "rag", "research", "analytics", "llm", "retrieval"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Linguistic",
+]
+
+# The core is deliberately thin: contracts, the recordset memory layer, and a
+# single LLM client. Storage backends and embedding models are extras, so
+# `import anatoolbox` never drags in a cluster driver or a deep-learning stack.
+dependencies = [
+    "openai>=1.50,<2",  # code targets the 1.x client surface; revisit when 2.x is tested
+]
+
+[project.optional-dependencies]
+# Everything needed to run a corpus from a local file — no external services.
+local = [
+    "numpy>=1.24",
+    "sentence-transformers>=2.2",
+    "rank-bm25>=0.2.2",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+]
+elasticsearch = ["elasticsearch>=8.0,<9"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.urls]
+Homepage = "https://github.com/anacode/anatoolbox"
+Documentation = "https://github.com/anacode/anatoolbox#readme"
+Issues = "https://github.com/anacode/anatoolbox/issues"
+
+[project.scripts]
+anatoolbox = "anatoolbox.run_tool:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["anatoolbox*"]
+
+[tool.setuptools.package-data]
+"anatoolbox.knowledge" = ["**/*.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# `ruff format` owns line length. What is left over is long string literals and
+# docstrings, which no formatter will rewrap and which are not worth hand-folding.
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
