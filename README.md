@@ -97,15 +97,40 @@ tool.run({"grain": "month"}, context=ToolContext(project="demo", session_id="s1"
 That is the whole extension story. `anatoolbox` ships **contracts, not a tool
 catalog** — you instantiate prefixes for your own corpus.
 
+## Run it on a file
+
+No services, no cluster, no index. Point it at a CSV:
+
+```python
+import anatoolbox
+from anatoolbox import ToolContext, resolve_tools
+
+anatoolbox.register_reference_tools()
+ingest, retrieve = resolve_tools(["ingest_corpus", "retrieve_passages"])
+
+ingest.run({"path": "ai_media.csv", "text_field": "content"}, context=ctx)
+# -> corpus_1
+
+retrieve.run({"query": "agentic web standards", "strategy": "sparse"}, context=ctx)
+# -> passages_1, derived_from ['corpus_1']
+```
+
+`strategy` is `sparse` (BM25), `dense` (embeddings), or `hybrid` (reciprocal
+rank fusion of the two) — so comparing retrieval strategies is a changed
+argument, not a changed pipeline.
+
 ## Install
 
 ```bash
-pip install anatoolbox            # core: contracts + memory + LLM client
-pip install "anatoolbox[local]"   # + run a corpus from a local file
+pip install anatoolbox                  # contracts + memory + BM25 retrieval
+pip install "anatoolbox[embeddings]"    # + dense retrieval with real models
+pip install "anatoolbox[local]"         # + parquet corpora
 ```
 
-The core has a single third-party dependency. Storage backends and embedding
-stacks are extras, so `import anatoolbox` never pulls in a cluster driver.
+The core has a single third-party dependency. BM25 is implemented in-tree, and
+dense ranking falls back to plain Python when numpy is absent, so sparse and
+dense retrieval both work on a bare install — the extras buy speed and real
+embedding models, not basic functionality.
 
 ## Status
 
@@ -114,8 +139,10 @@ stacks are extras, so `import anatoolbox` never pulls in a cluster driver.
 | Prefix contracts (34) | ✅ complete |
 | Recordset memory | ✅ complete, pluggable store + policy |
 | Registry / plugin entry points | ✅ complete |
-| Reference instantiations | 🚧 in progress |
-| Local corpus backend | 🚧 in progress |
+| Local corpus backend (CSV/JSON/JSONL/Parquet) | ✅ complete |
+| Retrieval: BM25 / dense / hybrid | ✅ complete |
+| Reference instantiations | 🚧 `ingest_corpus`, `retrieve_passages` |
+| Answering + evaluation tools | ❌ not yet |
 | Docs site | ❌ not yet |
 
 ## License

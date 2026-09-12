@@ -1,7 +1,7 @@
 """Recordset — one tool call's output, named so later stages can bind to it.
 
-A Recordset is the unit of cross-stage memory. `retrieve_articles` produces
-one; `calculate_mentions` consumes it and produces another. The model never
+A Recordset is the unit of cross-stage memory. `retrieve_passages` produces
+one; `score_rag_answers` consumes it and produces another. The model never
 sees the records themselves, only the handle (``articles_1``) and a one-line
 summary, so a 4,000-document result costs the same context as a 12-document
 one.
@@ -16,11 +16,11 @@ Two storage modes, and the distinction is the whole point:
 
 ``value``
     The records are held in the memory store itself. Derived output
-    (``calculate_mentions``, ``extract_*``, ``synthesize_*``) has no source
+    (``score_rag_answers``, ``extract_*``, ``synthesize_*``) has no source
     system to re-fetch from, so pointer-only memory cannot express it at all.
     That gap is why stage chaining needed this module.
 
-Recordsets are immutable. A second ``retrieve_articles`` call allocates
+Recordsets are immutable. A second ``retrieve_passages`` call allocates
 ``articles_2`` rather than overwriting ``articles_1``, which is what makes
 comparison and branching possible. Deletion tombstones (drops the payload,
 keeps metadata) when other recordsets record it in ``derived_from``, so the
@@ -44,13 +44,18 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def es_ref(*, index: str, ids: list) -> dict:
-    """Reference mode: ids in an Elasticsearch index, re-fetched on read."""
+def reference_ref(*, store: str, ids: list, **location: object) -> dict:
+    """Reference mode: ids living in ``store``, re-fetched on read.
+
+    ``location`` carries whatever that store needs to find them — an index
+    name, a corpus name, a bucket. Register the matching resolver with
+    ``anatoolbox.memory.register_ref_resolver``.
+    """
     return {
         "mode": REFERENCE_MODE,
-        "store": "es",
-        "index": str(index),
+        "store": str(store),
         "ids": [str(i) for i in ids],
+        **location,
     }
 
 

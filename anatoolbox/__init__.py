@@ -56,3 +56,20 @@ __all__ = [
     "tools_by_stage",
     "unregister_tool",
 ]
+
+
+def register_reference_tools(*, registry: str = "default", replace: bool = False) -> list[str]:
+    """Register the reference instantiations that ship with the package.
+
+    These are examples of how to instantiate a prefix, not a catalog you are
+    expected to consume — see the README. Importing anatoolbox registers
+    nothing on its own; call this when you want them.
+    """
+    from anatoolbox.gather.ingest.ingest_corpus import IngestCorpusTool
+    from anatoolbox.gather.retrieve.retrieve_passages import RetrievePassagesTool
+
+    tools = [IngestCorpusTool(), RetrievePassagesTool()]
+    return [register_tool(t, registry=registry, replace=replace).schema.name for t in tools]
+
+
+__all__.append("register_reference_tools")

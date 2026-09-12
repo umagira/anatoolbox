@@ -71,7 +71,7 @@ from anatoolbox.memory.recordset import (
     PROJECT_SCOPE,
     SESSION_SCOPE,
     Recordset,
-    es_ref,
+    reference_ref,
     value_ref,
 )
 from anatoolbox.memory.store import (
@@ -104,7 +104,7 @@ __all__ = [
     "Recordset",
     "RetainAllMemoryPolicy",
     "WorkingMemory",
-    "es_ref",
+    "reference_ref",
     "owner_key",
     "register_ref_resolver",
     "value_ref",

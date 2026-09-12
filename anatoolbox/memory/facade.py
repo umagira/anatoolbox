@@ -7,18 +7,18 @@ keep and show) and a ``MemoryOpLog`` (narration), so neither tools nor
 Producer side::
 
     handle = context.recordsets.remember(
-        object_type="articles",
+        object_type="passages",
         stage="gather",
-        produced_by="retrieve_articles",
-        args={"query": "SAF"},
-        ref=es_ref(index=index, ids=article_ids),
-        summary="47 articles matching 'SAF'",
+        produced_by="retrieve_passages",
+        args={"query": "agentic web"},
+        ref=reference_ref(store="local", corpus="ai_media", ids=passage_ids),
+        summary="47 passages matching 'agentic web'",
     ).handle
 
 Consumer side::
 
-    recordset = context.recordsets.bind(object_type="articles", requested=args.get("input"),
-                                        tool_name="calculate_mentions")
+    recordset = context.recordsets.bind(object_type="passages", requested=args.get("input"),
+                                        tool_name="score_rag_answers")
     documents = context.recordsets.records(recordset, source_includes=[...])
 
 ``bind`` is where the ergonomics live. With no ``requested`` handle it picks
@@ -69,26 +69,7 @@ def _resolve_inline(ref: dict, source_includes: list | None = None):
     return records, 0
 
 
-def _resolve_es(ref: dict, source_includes: list | None = None):
-    # Imported lazily: importing anatoolbox.memory must not require ES config.
-    from anatoolbox.es_client import get_es_client
-
-    ids = [str(i) for i in ref.get("ids") or []]
-    if not ids:
-        return [], 0
-    kwargs = {"index": ref.get("index"), "ids": ids}
-    if source_includes:
-        kwargs["source_includes"] = source_includes
-    response = get_es_client().mget(**kwargs)
-    documents = []
-    for doc in response.get("docs") or []:
-        if not doc.get("found"):
-            continue
-        documents.append({"_id": doc.get("_id"), "_source": doc.get("_source") or {}})
-    return documents, len(ids) - len(documents)
-
-
-_RESOLVERS: dict = {"inline": _resolve_inline, "es": _resolve_es}
+_RESOLVERS: dict = {"inline": _resolve_inline}
 
 
 def register_ref_resolver(store_name: str, resolver: Callable) -> None:
@@ -378,7 +359,7 @@ class Memory:
         """Did a consumer in this batch bind to something produced in it?
 
         True means a real multi-stage chain executed inside one batch of tool
-        calls — `retrieve_articles` then `calculate_mentions` on what it just
+        calls — `retrieve_passages` then `score_rag_answers` on what it just
         fetched.
         """
         produced_here = set(self._step_created)
