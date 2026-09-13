@@ -55,6 +55,14 @@ _INPUT_SCHEMA: dict[str, Any] = {
             ),
             "default": DEFAULT_ID_FIELD,
         },
+        "parse_lists": {
+            "type": "boolean",
+            "description": (
+                "Convert cells holding a list literal ('[\"para\", ...]') into real lists. "
+                "Default true."
+            ),
+            "default": True,
+        },
         "limit": {
             "type": "integer",
             "description": "Read at most this many records. Useful while iterating.",
@@ -99,6 +107,7 @@ class IngestCorpusTool:
                 id_field=args.get("id_field") or DEFAULT_ID_FIELD,
                 text_field=args.get("text_field") or DEFAULT_TEXT_FIELD,
                 limit=args.get("limit"),
+                parse_lists=args.get("parse_lists", True) is not False,
             )
         except (FileNotFoundError, ValueError) as exc:
             raise ToolInputError(

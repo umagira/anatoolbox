@@ -12,11 +12,11 @@ from anatoolbox.memory.policy import DefaultMemoryPolicy
 from anatoolbox.memory.store import InMemoryRecordsetStore
 
 CSV = (
-    "id,title,content\n"
-    'd1,Agentic web,"autonomous agents and web standards"\n'
-    'd2,AI chips,"accelerators and data centers"\n'
-    'd3,Models,"foundation model families"\n'
-    'd4,Browsing,"agents browsing the web"\n'
+    "id,title,date,content\n"
+    'd1,Agentic web,2024-10-01,"autonomous agents and web standards"\n'
+    'd2,AI chips,2025-01-15,"accelerators and data centers"\n'
+    'd3,Models,2025-03-20,"foundation model families"\n'
+    'd4,Browsing,2025-06-30,"agents browsing the web"\n'
 )
 
 
@@ -141,3 +141,64 @@ class TestRetrieve:
         payload = json.loads(RetrievePassagesTool().execute({"query": "agents web"}, context=ctx))
         assert payload["render"]["render_type"] == "table"
         assert payload["render"]["columns"] == ["rank", "score", "id", "snippet"]
+
+
+class TestTemporalFiltering:
+    @pytest.fixture(autouse=True)
+    def ingested(self, corpus_file, ctx):
+        IngestCorpusTool().run({"path": str(corpus_file), "text_field": "content"}, context=ctx)
+
+    def test_date_range_is_inclusive(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "agents web", "date_from": "2025-06-30", "date_to": "2025-06-30"},
+            context=ctx,
+        )
+        assert [p["id"] for p in out["passages"]] == ["d4"]
+
+    def test_open_ended_ranges(self, ctx):
+        tool = RetrievePassagesTool()
+        before = tool.run({"query": "agents web", "date_to": "2024-12-31"}, context=ctx)
+        after = tool.run({"query": "agents web", "date_from": "2025-01-01"}, context=ctx)
+        assert {p["id"] for p in before["passages"]} == {"d1"}
+        assert {p["id"] for p in after["passages"]} == {"d4"}
+
+    @pytest.mark.parametrize("strategy", ["sparse", "dense", "hybrid"])
+    def test_every_strategy_respects_the_range(self, ctx, strategy):
+        out = RetrievePassagesTool().run(
+            {
+                "query": "agents web model accelerators",
+                "strategy": strategy,
+                "date_from": "2025-01-01",
+                "size": 10,
+            },
+            context=ctx,
+        )
+        assert out["passages"]
+        assert all(p["date"] >= "2025-01-01" for p in out["passages"])
+
+    def test_range_is_recorded_in_provenance(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "agents", "date_from": "2025-01-01"}, context=ctx
+        )
+        assert ctx.recordsets.get(out["handle"]).args["date_from"] == "2025-01-01"
+        assert out["date_from"] == "2025-01-01" and out["date_to"] is None
+
+    def test_unconstrained_call_records_no_dates(self, ctx):
+        out = RetrievePassagesTool().run({"query": "agents"}, context=ctx)
+        args = ctx.recordsets.get(out["handle"]).args
+        assert "date_from" not in args and "date_to" not in args
+
+    def test_invalid_date_is_a_tool_input_error(self, ctx):
+        with pytest.raises(ToolInputError, match="ISO date"):
+            RetrievePassagesTool().run({"query": "agents", "date_from": "last spring"}, context=ctx)
+
+    def test_record_without_a_date_is_excluded_once_a_range_is_set(self, tmp_path, ctx):
+        path = tmp_path / "undated.csv"
+        path.write_text(
+            "id,date,content\nu1,,agents web\nu2,2025-02-01,agents web\n", encoding="utf-8"
+        )
+        IngestCorpusTool().run({"path": str(path), "text_field": "content"}, context=ctx)
+        out = RetrievePassagesTool().run(
+            {"query": "agents", "date_from": "2025-01-01"}, context=ctx
+        )
+        assert [p["id"] for p in out["passages"]] == ["u2"]

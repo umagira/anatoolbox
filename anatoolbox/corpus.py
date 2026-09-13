@@ -18,6 +18,7 @@ retrieval needs ``numpy`` — both in the ``local`` extra.
 
 from __future__ import annotations
 
+import ast
 import csv
 import json
 import sys
@@ -31,6 +32,25 @@ csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 DEFAULT_ID_FIELD = "id"
 DEFAULT_TEXT_FIELD = "text"
+PARAGRAPH_SEPARATOR = "\n\n"
+
+
+def parse_list_string(value: Any) -> Any:
+    """``"['a', 'b']"`` -> ``['a', 'b']``; anything else comes back unchanged.
+
+    Only a string that is *entirely* a valid list literal is converted, so a
+    title like ``"[Video] New model released"`` is left alone.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if len(stripped) < 2 or stripped[0] != "[" or stripped[-1] != "]":
+        return value
+    try:
+        parsed = ast.literal_eval(stripped)
+    except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+        return value
+    return parsed if isinstance(parsed, list) else value
 
 
 @dataclass
@@ -50,8 +70,22 @@ class LocalCorpus:
     _by_id: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     #: Cached embedding matrix, populated by ensure_embeddings().
     _embeddings: Any = field(default=None, repr=False, compare=False)
+    #: Cached joined texts and BM25 index. Built on first use, cleared by refresh().
+    _texts: Any = field(default=None, repr=False, compare=False)
+    _bm25: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        self._reindex()
+
+    def refresh(self) -> None:
+        """Rebuild the id index and drop cached texts, BM25 and embeddings.
+
+        Call after mutating ``records`` in place; everything derived from the
+        old records would otherwise silently describe data that is gone.
+        """
+        self._texts = None
+        self._bm25 = None
+        self._embeddings = None
         self._reindex()
 
     def _reindex(self) -> None:
@@ -75,10 +109,21 @@ class LocalCorpus:
         id_field: str = DEFAULT_ID_FIELD,
         text_field: str = DEFAULT_TEXT_FIELD,
         source: str = "",
+        parse_lists: bool = True,
     ) -> LocalCorpus:
+        """Build a corpus from dicts.
+
+        ``parse_lists`` turns string cells that hold a Python/JSON list literal
+        (``"['para one', 'para two']"``) back into lists. Tabular exports do
+        this to paragraph and tag columns constantly; left alone, every snippet
+        and every prompt starts with ``['``.
+        """
+        rows = [dict(r) for r in records]
+        if parse_lists:
+            rows = [{k: parse_list_string(v) for k, v in r.items()} for r in rows]
         return cls(
             name=name,
-            records=[dict(r) for r in records],
+            records=rows,
             id_field=id_field,
             text_field=text_field,
             source=source,
@@ -93,6 +138,7 @@ class LocalCorpus:
         id_field: str = DEFAULT_ID_FIELD,
         text_field: str = DEFAULT_TEXT_FIELD,
         limit: int | None = None,
+        parse_lists: bool = True,
     ) -> LocalCorpus:
         """Load ``.csv`` / ``.tsv`` / ``.json`` / ``.jsonl`` / ``.parquet``."""
         path = Path(path)
@@ -127,6 +173,7 @@ class LocalCorpus:
             id_field=id_field,
             text_field=text_field,
             source=str(path),
+            parse_lists=parse_lists,
         )
 
     # --- access ----------------------------------------------------------
@@ -152,12 +199,16 @@ class LocalCorpus:
         if value is None:
             return ""
         if isinstance(value, (list, tuple)):
-            # Some exports store a paragraph list rather than a blob.
-            return " ".join(str(part) for part in value)
+            # A paragraph list. Keep the boundaries: they are what a chunker
+            # splits on later, and they keep snippets readable.
+            return PARAGRAPH_SEPARATOR.join(str(part) for part in value)
         return str(value)
 
     def texts(self) -> list[str]:
-        return [self.text_of(r) for r in self.records]
+        """Searchable text for every record, computed once and cached."""
+        if self._texts is None:
+            self._texts = [self.text_of(r) for r in self.records]
+        return self._texts
 
     def describe(self) -> dict[str, Any]:
         columns = sorted(self.records[0]) if self.records else []
@@ -351,6 +402,19 @@ def get_embedder() -> Embedder:
     if _EMBEDDER is not None:
         return _EMBEDDER
     return sentence_transformer_embedder(_DEFAULT_EMBEDDING_MODEL)
+
+
+def ensure_bm25(corpus: LocalCorpus) -> Any:
+    """Build the corpus's BM25 index once and cache it.
+
+    Rebuilding per query costs ~10 s on a 16k-article corpus; an evaluation
+    loop over hundreds of questions cannot afford that.
+    """
+    if corpus._bm25 is None:
+        from anatoolbox.retrieval import BM25Index
+
+        corpus._bm25 = BM25Index(corpus.texts())
+    return corpus._bm25
 
 
 def ensure_embeddings(corpus: LocalCorpus, embedder: Embedder | None = None) -> Any:

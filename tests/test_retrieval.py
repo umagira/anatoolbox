@@ -51,6 +51,23 @@ class TestBM25:
     def test_empty_corpus_does_not_divide_by_zero(self):
         assert BM25Index([]).rank("anything") == []
 
+    def test_postings_give_the_same_ranking_as_scoring_every_document(self):
+        """Candidate pruning is an optimisation; it must not change results."""
+        index = BM25Index(TEXTS)
+        query = "agents web accelerators model"
+        brute = sorted(
+            ((i, index.score(tokenize(query), i)) for i in range(index.doc_count)),
+            key=lambda pair: (-pair[1], pair[0]),
+        )
+        brute = [(i, sc) for i, sc in brute if sc > 0]
+        assert [(h.index, h.score) for h in index.rank(query)] == brute
+
+    def test_repeated_query_terms_still_count(self):
+        index = BM25Index(TEXTS)
+        once = index.rank("agents")[0].score
+        twice = index.rank("agents agents")[0].score
+        assert twice > once
+
 
 class TestDense:
     def test_orders_by_cosine_similarity(self):

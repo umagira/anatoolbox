@@ -7,9 +7,11 @@ from anatoolbox.corpus import (
     clear_corpora,
     configure_embedder,
     corpus_names,
+    ensure_bm25,
     ensure_embeddings,
     get_corpus,
     local_ref,
+    parse_list_string,
     register_corpus,
     resolve_local_ref,
 )
@@ -60,7 +62,7 @@ def test_text_of_joins_paragraph_lists():
     corpus = LocalCorpus.from_records(
         [{"id": "d1", "content": ["para one", "para two"]}], name="c", text_field="content"
     )
-    assert corpus.texts() == ["para one para two"]
+    assert corpus.texts() == ["para one\n\npara two"], "paragraph boundaries must survive"
 
 
 def test_text_of_handles_missing_value():
@@ -157,3 +159,48 @@ def test_embeddings_are_computed_once():
     second = ensure_embeddings(corpus)
     assert first is second
     assert calls == [2], "embeddings should be cached on the corpus"
+
+
+def test_list_literal_cells_become_lists(tmp_path):
+    """Tabular exports stringify paragraph and tag lists; undo that on load."""
+    path = write(
+        tmp_path,
+        "c.csv",
+        "id,content,tags\nd1,\"['para one', 'para two']\",\"['Robotics', 'GPU']\"\n",
+    )
+    corpus = LocalCorpus.from_file(path, text_field="content")
+    record = corpus.get(["d1"])[0]
+    assert record["tags"] == ["Robotics", "GPU"]
+    assert corpus.texts() == ["para one\n\npara two"]
+
+
+def test_list_parsing_can_be_disabled(tmp_path):
+    path = write(tmp_path, "c.csv", "id,content\nd1,\"['a', 'b']\"\n")
+    corpus = LocalCorpus.from_file(path, text_field="content", parse_lists=False)
+    assert corpus.texts() == ["['a', 'b']"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["[Video] New model released", "[1, 2", "not a list", "", "[", "{'a': 1}", 42, None],
+)
+def test_parse_list_string_leaves_non_lists_alone(value):
+    assert parse_list_string(value) == value
+
+
+def test_parse_list_string_does_not_turn_dicts_into_lists():
+    assert parse_list_string("{'a': 1}") == "{'a': 1}"
+
+
+def test_texts_are_cached_and_refresh_clears_them():
+    corpus = LocalCorpus.from_records(ROWS, name="c", text_field="content")
+    assert corpus.texts() is corpus.texts()
+    corpus.records.append({"id": "d3", "content": "new"})
+    corpus.refresh()
+    assert len(corpus.texts()) == 3
+    assert corpus.get(["d3"])
+
+
+def test_bm25_index_is_built_once():
+    corpus = LocalCorpus.from_records(ROWS, name="c", text_field="content")
+    assert ensure_bm25(corpus) is ensure_bm25(corpus)

@@ -57,16 +57,21 @@ class BM25Index:
     def __init__(self, texts: Sequence[str], *, k1: float = BM25_K1, b: float = BM25_B) -> None:
         self.k1 = k1
         self.b = b
-        self.doc_tokens = [tokenize(t) for t in texts]
-        self.doc_lengths = [len(t) for t in self.doc_tokens]
-        self.doc_count = len(self.doc_tokens)
+        self.term_frequencies: list[Counter] = []
+        self.doc_lengths: list[int] = []
+        # term -> indices of documents containing it. Lets a query touch only
+        # the documents that can score, instead of every document in the corpus.
+        self.postings: dict[str, list[int]] = {}
+        for index, text in enumerate(texts):
+            tokens = tokenize(text)
+            frequencies = Counter(tokens)
+            self.term_frequencies.append(frequencies)
+            self.doc_lengths.append(len(tokens))
+            for term in frequencies:
+                self.postings.setdefault(term, []).append(index)
+        self.doc_count = len(self.term_frequencies)
         self.avg_length = (sum(self.doc_lengths) / self.doc_count) if self.doc_count else 0.0
-        self.term_frequencies = [Counter(tokens) for tokens in self.doc_tokens]
-
-        document_frequency: Counter = Counter()
-        for tokens in self.doc_tokens:
-            document_frequency.update(set(tokens))
-        self.document_frequency = document_frequency
+        self.document_frequency = Counter({t: len(ids) for t, ids in self.postings.items()})
 
     def idf(self, term: str) -> float:
         df = self.document_frequency.get(term, 0)
@@ -93,9 +98,11 @@ class BM25Index:
         query_tokens = tokenize(query)
         if not query_tokens:
             return []
+        candidates: set[int] = set()
+        for term in set(query_tokens):
+            candidates.update(self.postings.get(term, ()))
         scored = [
-            Hit(index=i, score=self.score(query_tokens, i), strategy="sparse")
-            for i in range(self.doc_count)
+            Hit(index=i, score=self.score(query_tokens, i), strategy="sparse") for i in candidates
         ]
         scored = [hit for hit in scored if hit.score > 0]
         scored.sort(key=lambda h: (-h.score, h.index))

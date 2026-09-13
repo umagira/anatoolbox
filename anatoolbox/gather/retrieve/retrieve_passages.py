@@ -16,10 +16,11 @@ score or table can say exactly which evidence it rests on.
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any, ClassVar
 
 from anatoolbox.base import ToolContext, ToolSchema
-from anatoolbox.corpus import ensure_embeddings, get_corpus, local_ref
+from anatoolbox.corpus import ensure_bm25, ensure_embeddings, get_corpus, get_embedder, local_ref
 from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.retrieve.base import PREFIX, STAGE
 from anatoolbox.retrieval import STRATEGIES, rank_records
@@ -29,6 +30,7 @@ OBJECT_TYPE = "passages"
 CORPUS_OBJECT_TYPE = "corpus"
 DEFAULT_SIZE = 10
 DEFAULT_STRATEGY = "sparse"
+DEFAULT_DATE_FIELD = "date"
 #: Characters of text echoed back per hit. The full body stays in the corpus.
 SNIPPET_CHARS = 400
 
@@ -61,6 +63,19 @@ _INPUT_SCHEMA: dict[str, Any] = {
                 "Optional handle of a corpus to search, e.g. 'corpus_1'. "
                 "Omit to use the most recent one."
             ),
+        },
+        "date_from": {
+            "type": "string",
+            "description": "Only passages published on or after this ISO date (YYYY-MM-DD).",
+        },
+        "date_to": {
+            "type": "string",
+            "description": "Only passages published on or before this ISO date (YYYY-MM-DD).",
+        },
+        "date_field": {
+            "type": "string",
+            "description": f"Record field holding the publication date (default: {DEFAULT_DATE_FIELD}).",
+            "default": DEFAULT_DATE_FIELD,
         },
     },
     "required": ["query"],
@@ -102,6 +117,9 @@ class RetrievePassagesTool:
                 details={"argument": "strategy", "value": strategy},
             )
         size = int(args.get("size") or DEFAULT_SIZE)
+        date_field = (args.get("date_field") or DEFAULT_DATE_FIELD).strip()
+        date_from = _parse_date(args.get("date_from"), "date_from")
+        date_to = _parse_date(args.get("date_to"), "date_to")
 
         corpus, source_handle = self._resolve_corpus(args, context=context)
         records = corpus.records
@@ -111,8 +129,6 @@ class RetrievePassagesTool:
         if strategy in ("dense", "hybrid"):
             document_matrix = ensure_embeddings(corpus)
 
-        from anatoolbox.corpus import get_embedder
-
         hits = rank_records(
             query=query.strip(),
             records=records,
@@ -121,6 +137,8 @@ class RetrievePassagesTool:
             size=size,
             embedder=get_embedder() if strategy in ("dense", "hybrid") else None,
             document_matrix=document_matrix,
+            bm25=ensure_bm25(corpus) if strategy in ("sparse", "hybrid") else None,
+            predicate=_date_predicate(date_field, date_from, date_to),
         )
 
         passages = [
@@ -146,6 +164,8 @@ class RetrievePassagesTool:
             "returned": len(passages),
             "passages": passages,
             "input_handle": source_handle,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
         }
         result["handle"] = self._remember(
             context,
@@ -154,6 +174,7 @@ class RetrievePassagesTool:
             query=query.strip(),
             strategy=strategy,
             source_handle=source_handle,
+            date_range=(result["date_from"], result["date_to"]),
         )
         return result
 
@@ -193,6 +214,7 @@ class RetrievePassagesTool:
         query: str,
         strategy: str,
         source_handle: str | None,
+        date_range: tuple = (None, None),
     ) -> str | None:
         """Store the hit ids by reference, with lineage back to the corpus."""
         if context.recordsets is None:
@@ -201,7 +223,13 @@ class RetrievePassagesTool:
             object_type=OBJECT_TYPE,
             stage=STAGE,
             produced_by=TOOL_NAME,
-            args={"query": query, "strategy": strategy, "corpus": corpus.name},
+            args={
+                "query": query,
+                "strategy": strategy,
+                "corpus": corpus.name,
+                **({"date_from": date_range[0]} if date_range[0] else {}),
+                **({"date_to": date_range[1]} if date_range[1] else {}),
+            },
             ref=local_ref(corpus=corpus.name, ids=[p["id"] for p in passages]),
             count=len(passages),
             summary=f"{len(passages)} passages for {query!r} ({strategy})",
@@ -220,3 +248,43 @@ class RetrievePassagesTool:
             "caption": f"{data['returned']} passages for {data['query']!r} ({data['strategy']})",
         }
         return json.dumps({"render": render, **data})
+
+
+def _parse_date(value: Any, argument: str) -> date | None:
+    """ISO date argument -> ``date``; blank -> None; anything else is an input error."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except ValueError as exc:
+        raise ToolInputError(
+            code="invalid_argument_value",
+            message=f"{argument} must be an ISO date (YYYY-MM-DD), got {value!r}.",
+            tool_name=TOOL_NAME,
+            details={"argument": argument, "value": value},
+        ) from exc
+
+
+def _date_predicate(field: str, date_from: date | None, date_to: date | None):
+    """Keep records whose ``field`` falls in the range. None when unconstrained.
+
+    A record with a missing or unparseable date is excluded once a range is
+    set: it cannot be shown to be in range, and a temporal question should
+    not be answered from evidence of unknown date.
+    """
+    if date_from is None and date_to is None:
+        return None
+
+    def in_range(record: dict) -> bool:
+        raw = record.get(field)
+        try:
+            published = date.fromisoformat(str(raw).strip()[:10])
+        except ValueError:
+            return False
+        if date_from is not None and published < date_from:
+            return False
+        if date_to is not None and published > date_to:
+            return False
+        return True
+
+    return in_range
