@@ -204,3 +204,38 @@ def test_texts_are_cached_and_refresh_clears_them():
 def test_bm25_index_is_built_once():
     corpus = LocalCorpus.from_records(ROWS, name="c", text_field="content")
     assert ensure_bm25(corpus) is ensure_bm25(corpus)
+
+
+def test_switching_the_configured_embedder_recomputes_embeddings():
+    """Stage 2 -> Stage 3: plugging in a new model must not reuse old vectors."""
+    corpus = LocalCorpus.from_records(ROWS, name="c", text_field="content")
+    configure_embedder(lambda texts: [[1.0, 0.0] for _ in texts])
+    first = ensure_embeddings(corpus)
+    configure_embedder(lambda texts: [[0.0, 1.0, 0.0] for _ in texts])
+    second = ensure_embeddings(corpus)
+    assert first != second
+    assert len(second[0]) == 3
+    assert ensure_embeddings(corpus) is second, "same model -> cached"
+
+
+def test_explicit_embedder_is_cached_by_identity():
+    corpus = LocalCorpus.from_records(ROWS, name="c", text_field="content")
+    calls = []
+
+    def embedder(texts):
+        calls.append(1)
+        return [[1.0] for _ in texts]
+
+    ensure_embeddings(corpus, embedder)
+    ensure_embeddings(corpus, embedder)
+    assert calls == [1]
+    ensure_embeddings(corpus, lambda texts: [[2.0] for _ in texts])
+    assert corpus._embeddings == [[2.0], [2.0]]
+
+
+def test_refresh_drops_embeddings():
+    corpus = LocalCorpus.from_records(ROWS, name="c", text_field="content")
+    configure_embedder(lambda texts: [[1.0] for _ in texts])
+    ensure_embeddings(corpus)
+    corpus.refresh()
+    assert corpus._embeddings is None and corpus._embeddings_key is None

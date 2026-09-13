@@ -70,6 +70,8 @@ class LocalCorpus:
     _by_id: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     #: Cached embedding matrix, populated by ensure_embeddings().
     _embeddings: Any = field(default=None, repr=False, compare=False)
+    #: Which embedder produced ``_embeddings``; a different one invalidates them.
+    _embeddings_key: Any = field(default=None, repr=False, compare=False)
     #: Cached joined texts and BM25 index. Built on first use, cleared by refresh().
     _texts: Any = field(default=None, repr=False, compare=False)
     _bm25: Any = field(default=None, repr=False, compare=False)
@@ -86,6 +88,7 @@ class LocalCorpus:
         self._texts = None
         self._bm25 = None
         self._embeddings = None
+        self._embeddings_key = None
         self._reindex()
 
     def _reindex(self) -> None:
@@ -382,6 +385,9 @@ def _load_model(model_name: str, factory: Any) -> Any:
 
 
 _EMBEDDER: Embedder | None = None
+#: Bumped by every configure_embedder() call, so embeddings cached under a
+#: previous model are recognized as stale rather than silently reused.
+_EMBEDDER_GENERATION = 0
 _DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 
@@ -393,8 +399,9 @@ def configure_embedder(embedder: Embedder | None) -> None:
     previous stage — and every dense retrieval picks it up. Pass ``None`` to
     fall back to the default sentence-transformers model.
     """
-    global _EMBEDDER
+    global _EMBEDDER, _EMBEDDER_GENERATION
     _EMBEDDER = embedder
+    _EMBEDDER_GENERATION += 1
 
 
 def get_embedder() -> Embedder:
@@ -417,13 +424,26 @@ def ensure_bm25(corpus: LocalCorpus) -> Any:
     return corpus._bm25
 
 
+def _embedder_key(embedder: Embedder | None) -> tuple:
+    if embedder is None:
+        return ("configured", _EMBEDDER_GENERATION)
+    return ("explicit", id(embedder))
+
+
 def ensure_embeddings(corpus: LocalCorpus, embedder: Embedder | None = None) -> Any:
-    """Embed a corpus once and cache the matrix on it."""
-    cached = getattr(corpus, "_embeddings", None)
-    if cached is not None:
-        return cached
+    """Embed a corpus once per embedder and cache the matrix on it.
+
+    The cache is keyed by the embedder that produced it. Switching models —
+    say, to one fine-tuned in an earlier stage — recomputes instead of reusing
+    vectors from the old model, which would either fail on a dimension
+    mismatch or, worse, silently rank with the wrong model.
+    """
+    key = _embedder_key(embedder)
+    if corpus._embeddings is not None and corpus._embeddings_key == key:
+        return corpus._embeddings
     matrix = (embedder or get_embedder())(corpus.texts())
     corpus._embeddings = matrix
+    corpus._embeddings_key = key
     return matrix
 
 
@@ -448,6 +468,9 @@ def load_embeddings(corpus: LocalCorpus, path: str | Path) -> Any:
             f"has {len(corpus)} records — it was built for a different corpus."
         )
     corpus._embeddings = matrix
+    # Assumed to come from the currently configured embedder; that is the
+    # model retrieval will encode queries with.
+    corpus._embeddings_key = _embedder_key(None)
     return matrix
 
 
