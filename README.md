@@ -119,6 +119,17 @@ retrieve.run({"query": "agentic web standards", "strategy": "sparse"}, context=c
 rank fusion of the two) — so comparing retrieval strategies is a changed
 argument, not a changed pipeline.
 
+## Try-out notebooks
+
+Each build day ships a notebook that exercises that day's features on the real
+[AI Media Dataset](https://www.kaggle.com/datasets/jannalipenkova/ai-media-dataset),
+framed around the HSLU *Computational Language Technologies* capstone. The dataset is
+downloaded from Kaggle's public API on first run — no Kaggle account needed.
+
+| Notebook | Covers |
+|---|---|
+| [`notebooks/day2_retrieval_ai_media.ipynb`](notebooks/day2_retrieval_ai_media.ipynb) | Ingesting the corpus, sparse/dense/hybrid retrieval, date windows, chunking, lineage |
+
 ## Install
 
 ```bash
