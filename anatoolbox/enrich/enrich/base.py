@@ -20,7 +20,7 @@ PREFIX: str = "enrich_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Target objects; enrichment attributes; reference source; join keys; precedence and freshness policy."
 ABSTRACT_OUTPUT: str = (
     "Enriched objects with added fields, source references, match quality, and unresolved gaps."

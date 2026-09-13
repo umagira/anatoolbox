@@ -20,7 +20,7 @@ PREFIX: str = "classify_"
 STAGE: str = "analyze"
 STAGE_LABEL: str = "Analyze"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Structured object or evidence; taxonomy and version; labeling rules; multi-label and confidence policy."
 ABSTRACT_OUTPUT: str = (
     "Classification labels, taxonomy identifiers, confidence, rationale, and supporting evidence."

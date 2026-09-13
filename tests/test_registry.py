@@ -29,10 +29,10 @@ def test_register_and_resolve_round_trip():
 
 
 def test_resolve_preserves_order():
-    for n in ("retrieve_passages", "score_rag_answers", "tabulate_comparison"):
+    for n in ("retrieve_passages", "score_rag_answers", "clean_boilerplate"):
         register_tool(make_tool(n))
-    got = [t.schema.name for t in resolve_tools(["tabulate_comparison", "retrieve_passages"])]
-    assert got == ["tabulate_comparison", "retrieve_passages"]
+    got = [t.schema.name for t in resolve_tools(["clean_boilerplate", "retrieve_passages"])]
+    assert got == ["clean_boilerplate", "retrieve_passages"]
 
 
 def test_unknown_tool_name_lists_what_is_registered():
@@ -119,11 +119,11 @@ def test_unregister_is_idempotent():
 def test_tools_grouped_by_stage():
     register_tool(make_tool("retrieve_passages"))
     register_tool(make_tool("score_rag_answers"))
-    register_tool(make_tool("tabulate_comparison"))
+    register_tool(make_tool("clean_boilerplate"))
     assert tools_by_stage() == {
         "gather": ["retrieve_passages"],
         "analyze": ["score_rag_answers"],
-        "present": ["tabulate_comparison"],
+        "preprocess": ["clean_boilerplate"],
     }
 
 

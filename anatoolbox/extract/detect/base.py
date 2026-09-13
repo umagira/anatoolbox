@@ -20,7 +20,7 @@ PREFIX: str = "detect_"
 STAGE: str = "extract"
 STAGE_LABEL: str = "Extract information"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = (
     "Source content or observations; detection definition; thresholds; contextual constraints."
 )

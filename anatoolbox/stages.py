@@ -1,41 +1,47 @@
-"""Analytical toolbox workflow stages (see analytical_toolbox_workflow_spec.xlsx).
+"""Workflow stages of the analytical toolbox.
 
-Layout::
+Six stages, each a package of task-type prefixes::
 
-    toolbox/<stage>/<prefix>/base.py   # prefix contract + I/O abstractions
-    toolbox/<stage>/<prefix>/<prefix>_<object>.py
+    anatoolbox/<stage>/<prefix>/base.py               # prefix contract + abstract I/O
+    anatoolbox/<stage>/<prefix>/<prefix>_<object>.py  # instantiations
 
-Composites live under ``anatoolbox.workflows``; stage tools under stage/prefix packages.
+Presentation — charts, tables, reports — is deliberately not a stage: it
+belongs in the frontend. A tool can declare how its result *may* be displayed
+(``ToolSchema.render_type`` and the ``render`` envelope); the host renders it.
 """
 
 STAGE_PACKAGE_BY_LABEL = {
     "Prepare": "prepare",
     "Gather": "gather",
+    "Preprocess": "preprocess",
     "Extract information": "extract",
     "Analyze": "analyze",
     "Enrich and interpret": "enrich",
-    "Present and visualize": "present",
 }
 
-# Full toolbox stage order (prepare scopes/plans before evidence work).
+#: Stage order. Prepare scopes the work before any evidence is touched.
 STAGE_ORDER = [
     "prepare",
     "gather",
+    "preprocess",
     "extract",
     "analyze",
     "enrich",
-    "present",
 ]
 
-# Stages the research runner executes after the brief gate (soft brief is not a
-# stage-agent turn — see packages/agent research runner).
-RESEARCH_PIPELINE_STAGES = [
-    "gather",
-    "extract",
-    "analyze",
-    "enrich",
-    "present",
-]
+#: What each stage is for — the job a prefix must fit to belong to it.
+STAGE_DESCRIPTIONS = {
+    "prepare": "Scope and plan the research before any evidence work: turn a request into a reviewable brief.",
+    "gather": "Acquire source records — ingest, retrieve, and rerank them — without rewriting their meaning.",
+    "preprocess": "Prepare data for further analysis: parse, clean, normalize, and deduplicate it.",
+    "extract": "Take raw data or information and extract the relevant subset in a given form: facts, entities, events, relationships.",
+    "analyze": "Derive results by explicit methods: aggregates, calculations, classifications, comparisons, and scores.",
+    "enrich": "Add context and judgment: synthesize evidence, interpret and explain results, assess, benchmark, validate, and recommend.",
+}
+
+#: Stages an evidence pipeline runs once the plan is approved. Prepare
+#: produces the plan itself rather than running as a step of it.
+RESEARCH_PIPELINE_STAGES = [stage for stage in STAGE_ORDER if stage != "prepare"]
 
 
 # --- Prefix catalog -------------------------------------------------------

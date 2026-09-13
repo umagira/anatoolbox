@@ -1,4 +1,4 @@
-"""deduplicate_ tool family — Extract information stage.
+"""deduplicate_ tool family — Preprocess stage.
 
 Identify and consolidate duplicate or near-duplicate records while preserving corroboration and source lineage.
 
@@ -17,10 +17,10 @@ from typing import Any, ClassVar, Protocol
 from anatoolbox.base import ToolContext, ToolSchema
 
 PREFIX: str = "deduplicate_"
-STAGE: str = "extract"
-STAGE_LABEL: str = "Extract information"
+STAGE: str = "preprocess"
+STAGE_LABEL: str = "Preprocess"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Source artifacts, observations, or events; similarity features; duplicate definition; clustering policy."
 ABSTRACT_OUTPUT: str = "Canonical records or duplicate clusters with member references, merge decisions, and provenance."
 TRANSFORMATION: str = "Identify and consolidate duplicate or near-duplicate records while preserving corroboration and source lineage."

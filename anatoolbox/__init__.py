@@ -2,8 +2,8 @@
 
 Two ideas carry the package:
 
-1. **A grammar of analytical work.** Six stages (prepare, gather, extract,
-   analyze, enrich, present) and 34 task-type prefixes, each a contract with
+1. **A grammar of analytical work.** Six stages (prepare, gather, preprocess,
+   extract, analyze, enrich) and 24 task-type prefixes, each a contract with
    abstract input/output and a one-sentence transformation. An agent reasons
    about *what kind of step comes next*, not which function to call.
 
@@ -28,6 +28,7 @@ from anatoolbox.registry import (
 )
 from anatoolbox.stages import (
     RESEARCH_PIPELINE_STAGES,
+    STAGE_DESCRIPTIONS,
     STAGE_ORDER,
     prefix_to_stage,
     prefixes_for_stage,
@@ -39,6 +40,7 @@ __version__ = "0.1.0"
 __all__ = [
     "REGISTRIES",
     "RESEARCH_PIPELINE_STAGES",
+    "STAGE_DESCRIPTIONS",
     "STAGE_ORDER",
     "TOOL_REGISTRY",
     "Tool",

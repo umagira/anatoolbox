@@ -56,7 +56,8 @@ class ShowMemoryTool:
     """Return working-memory pointers and stored recordsets for this session."""
 
     prefix: ClassVar[str] = "show_"
-    stage: ClassVar[str] = "present"
+    # A utility for inspecting memory, not a step in any research stage.
+    stage: ClassVar[str | None] = None
     tool_name: ClassVar[str] = TOOL_NAME
 
     schema = ToolSchema(

@@ -1,20 +1,20 @@
-"""``trend_`` tools — Analyze stage.
+"""``rerank_`` tools — Gather stage.
 
-Analyze ordered observations over time to characterize direction, rate of change, persistence, or structural shifts.
+Re-score a candidate set of retrieved records against the query using their original text, and re-order them by that score.
 
 This package ships the prefix *contract* only. Instantiate it for your
-own objects as ``trend_<object>`` and register with
+own objects as ``rerank_<object>`` and register with
 ``anatoolbox.registry.register_tool``.
 """
 
-from anatoolbox.analyze.trend.base import (
+from anatoolbox.gather.rerank.base import (
     ABSTRACT_INPUT,
     ABSTRACT_OUTPUT,
     PREFIX,
     STAGE,
     STAGE_LABEL,
     TRANSFORMATION,
-    TrendTool,
+    RerankTool,
 )
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "STAGE",
     "STAGE_LABEL",
     "TRANSFORMATION",
-    "TrendTool",
+    "RerankTool",
 ]

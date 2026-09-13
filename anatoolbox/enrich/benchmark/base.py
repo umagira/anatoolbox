@@ -20,7 +20,7 @@ PREFIX: str = "benchmark_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = (
     "Target measures; benchmark population or standard; period; comparability and cohort rules."
 )

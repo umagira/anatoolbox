@@ -20,7 +20,7 @@ PREFIX: str = "aggregate_"
 STAGE: str = "analyze"
 STAGE_LABEL: str = "Analyze"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Structured records; grouping dimensions; aggregation functions; weighting and missing-data policy."
 ABSTRACT_OUTPUT: str = "Aggregated dataset at a defined grain with measures, counts, and lineage to contributing records."
 TRANSFORMATION: str = "Combine multiple records into summaries by entity, category, cohort, geography, or time period."

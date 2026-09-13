@@ -1,4 +1,6 @@
 """Workflow stage: Gather.
 
-See analytical_toolbox_workflow_spec.xlsx and prefix subpackages.
+Acquire source records — ingest, retrieve, and rerank them — without rewriting their meaning.
+
+Prefix contracts live in the subpackages; see ``anatoolbox.stages``.
 """

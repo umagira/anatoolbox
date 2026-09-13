@@ -1,4 +1,6 @@
 """Workflow stage: Extract information.
 
-See analytical_toolbox_workflow_spec.xlsx and prefix subpackages.
+Take raw data or information and extract the relevant subset in a given form: facts, entities, events, relationships.
+
+Prefix contracts live in the subpackages; see ``anatoolbox.stages``.
 """

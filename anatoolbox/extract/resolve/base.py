@@ -20,7 +20,7 @@ PREFIX: str = "resolve_"
 STAGE: str = "extract"
 STAGE_LABEL: str = "Extract information"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Candidate references; match attributes; authoritative identifiers; ambiguity and conflict policy."
 ABSTRACT_OUTPUT: str = (
     "Canonical identifiers, match decisions, candidate matches, confidence, and review flags."

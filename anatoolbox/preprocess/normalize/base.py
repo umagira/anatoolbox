@@ -1,4 +1,4 @@
-"""normalize_ tool family — Extract information stage.
+"""normalize_ tool family — Preprocess stage.
 
 Standardize values, labels, units, currencies, dates, periods, or taxonomies into a common representation.
 
@@ -17,10 +17,10 @@ from typing import Any, ClassVar, Protocol
 from anatoolbox.base import ToolContext, ToolSchema
 
 PREFIX: str = "normalize_"
-STAGE: str = "extract"
-STAGE_LABEL: str = "Extract information"
+STAGE: str = "preprocess"
+STAGE_LABEL: str = "Preprocess"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Structured observations; source conventions; target conventions; conversion and mapping policy."
 ABSTRACT_OUTPUT: str = (
     "Normalized observations plus transformation metadata and links to original values."

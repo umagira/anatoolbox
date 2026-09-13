@@ -20,7 +20,7 @@ PREFIX: str = "extract_"
 STAGE: str = "extract"
 STAGE_LABEL: str = "Extract information"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Parsed or raw content; extraction schema; target fields or object types; inclusion and exclusion rules."
 ABSTRACT_OUTPUT: str = "Structured evidence units or observations with values, evidence locators, confidence, and provenance."
 TRANSFORMATION: str = "Identify explicit facts, entities, metrics, statements, events, or relationships contained in source material."

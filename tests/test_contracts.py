@@ -1,4 +1,4 @@
-"""The 34 prefix contracts are the package's public surface. Pin their shape.
+"""The prefix contracts are the package's public surface. Pin their shape.
 
 These files are generated from the workflow spec, so a regeneration that
 drops a field or changes a quote style must fail here rather than silently
@@ -12,7 +12,7 @@ import re
 import pytest
 
 import anatoolbox
-from anatoolbox.stages import STAGE_ORDER, prefix_to_stage
+from anatoolbox.stages import STAGE_ORDER, STAGE_PACKAGE_BY_LABEL, prefix_to_stage
 
 ROOT = pathlib.Path(anatoolbox.__file__).parent
 CONTRACTS = sorted(ROOT.glob("*/*/base.py"))
@@ -25,8 +25,8 @@ def test_every_stage_has_at_least_one_prefix():
 
 
 def test_expected_contract_count():
-    assert len(CONTRACTS) == 34
-    assert len(prefix_to_stage()) == 34, "a contract is missing from prefix discovery"
+    assert len(CONTRACTS) == 24
+    assert len(prefix_to_stage()) == 24, "a contract is missing from prefix discovery"
 
 
 @pytest.mark.parametrize("path", CONTRACTS, ids=lambda p: f"{p.parent.parent.name}/{p.parent.name}")
@@ -65,3 +65,17 @@ def test_contract_is_importable_and_consistent(path):
 def test_prefixes_are_unique():
     prefixes = [p.parent.name for p in CONTRACTS]
     assert len(prefixes) == len(set(prefixes))
+
+
+def test_stage_packages_match_stage_order():
+    """No orphaned stage directory survives a restructure, such as a removed `present/`."""
+    assert {path.parent.parent.name for path in CONTRACTS} == set(STAGE_ORDER)
+
+
+@pytest.mark.parametrize("path", CONTRACTS, ids=lambda p: f"{p.parent.parent.name}/{p.parent.name}")
+def test_contract_sits_in_the_stage_it_declares(path):
+    """A contract moved between stages must have its STAGE and STAGE_LABEL moved too."""
+    rel = path.parent.relative_to(ROOT).as_posix().replace("/", ".")
+    mod = importlib.import_module(f"anatoolbox.{rel}.base")
+    assert path.parent.parent.name == mod.STAGE
+    assert STAGE_PACKAGE_BY_LABEL[mod.STAGE_LABEL] == mod.STAGE

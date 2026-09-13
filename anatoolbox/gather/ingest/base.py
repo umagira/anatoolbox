@@ -20,7 +20,7 @@ PREFIX: str = "ingest_"
 STAGE: str = "gather"
 STAGE_LABEL: str = "Gather"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Files, records, or connector references; source metadata; schema hints; load and update policy."
 ABSTRACT_OUTPUT: str = "Registered corpus or dataset with validated structure, canonical identifiers, load status, and provenance."
 TRANSFORMATION: str = "Import a supplied or connected dataset, document corpus, or prior work product into a managed workspace for repeated downstream use."

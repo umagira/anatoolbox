@@ -1,20 +1,20 @@
-"""``report_`` tools — Present and visualize stage.
+"""``parse_`` tools — Preprocess stage.
 
-Compose a complete deliverable from findings, evidence, analyses, tables, and visualizations.
+Convert a file or source format into machine-readable structural components without substantial domain interpretation.
 
 This package ships the prefix *contract* only. Instantiate it for your
-own objects as ``report_<object>`` and register with
+own objects as ``parse_<object>`` and register with
 ``anatoolbox.registry.register_tool``.
 """
 
-from anatoolbox.present.report.base import (
+from anatoolbox.preprocess.parse.base import (
     ABSTRACT_INPUT,
     ABSTRACT_OUTPUT,
     PREFIX,
     STAGE,
     STAGE_LABEL,
     TRANSFORMATION,
-    ReportTool,
+    ParseTool,
 )
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "STAGE",
     "STAGE_LABEL",
     "TRANSFORMATION",
-    "ReportTool",
+    "ParseTool",
 ]

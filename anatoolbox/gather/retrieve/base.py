@@ -22,7 +22,7 @@ PREFIX: str = "retrieve_"
 STAGE: str = "gather"
 STAGE_LABEL: str = "Gather"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = (
     "Retrieval scope; query or identifiers; source configuration; "
     "time, geography, entity, and access constraints."

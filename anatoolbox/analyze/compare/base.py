@@ -20,7 +20,7 @@ PREFIX: str = "compare_"
 STAGE: str = "analyze"
 STAGE_LABEL: str = "Analyze"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Comparable datasets or objects; comparison dimensions; baseline or cohort; normalization policy."
 ABSTRACT_OUTPUT: str = "Comparison results such as deltas, ranks, percentiles, similarities, or significance indicators."
 TRANSFORMATION: str = "Evaluate similarities, differences, ranks, or changes between entities, cohorts, scenarios, or periods."

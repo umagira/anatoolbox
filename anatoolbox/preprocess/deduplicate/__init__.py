@@ -1,20 +1,20 @@
-"""``model_`` tools — Analyze stage.
+"""``deduplicate_`` tools — Preprocess stage.
 
-Execute a statistical, forecasting, scenario, simulation, or optimization model.
+Identify and consolidate duplicate or near-duplicate records while preserving corroboration and source lineage.
 
 This package ships the prefix *contract* only. Instantiate it for your
-own objects as ``model_<object>`` and register with
+own objects as ``deduplicate_<object>`` and register with
 ``anatoolbox.registry.register_tool``.
 """
 
-from anatoolbox.analyze.model.base import (
+from anatoolbox.preprocess.deduplicate.base import (
     ABSTRACT_INPUT,
     ABSTRACT_OUTPUT,
     PREFIX,
     STAGE,
     STAGE_LABEL,
     TRANSFORMATION,
-    ModelTool,
+    DeduplicateTool,
 )
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "STAGE",
     "STAGE_LABEL",
     "TRANSFORMATION",
-    "ModelTool",
+    "DeduplicateTool",
 ]

@@ -20,7 +20,7 @@ PREFIX: str = "score_"
 STAGE: str = "analyze"
 STAGE_LABEL: str = "Analyze"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = (
     "Evidence or metrics; scoring rubric; weights; thresholds; missing-data and override policy."
 )

@@ -20,7 +20,7 @@ PREFIX: str = "calculate_"
 STAGE: str = "analyze"
 STAGE_LABEL: str = "Analyze"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = (
     "Validated input measures; formula parameters; units; period and denominator conventions."
 )

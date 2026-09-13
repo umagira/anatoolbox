@@ -20,7 +20,7 @@ PREFIX: str = "interpret_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Analysis results; domain and business context; stakeholder or decision perspective; alternative explanations."
 ABSTRACT_OUTPUT: str = "Interpretive claims, implications, hypotheses, limitations, and evidence or analysis references."
 TRANSFORMATION: str = "Explain the significance, implications, possible causes, or strategic meaning of analytical results in context."

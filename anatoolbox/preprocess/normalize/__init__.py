@@ -1,20 +1,20 @@
-"""``chart_`` tools — Present and visualize stage.
+"""``normalize_`` tools — Preprocess stage.
 
-Create a conventional quantitative chart that communicates a comparison, trend, distribution, composition, or relationship.
+Standardize values, labels, units, currencies, dates, periods, or taxonomies into a common representation.
 
 This package ships the prefix *contract* only. Instantiate it for your
-own objects as ``chart_<object>`` and register with
+own objects as ``normalize_<object>`` and register with
 ``anatoolbox.registry.register_tool``.
 """
 
-from anatoolbox.present.chart.base import (
+from anatoolbox.preprocess.normalize.base import (
     ABSTRACT_INPUT,
     ABSTRACT_OUTPUT,
     PREFIX,
     STAGE,
     STAGE_LABEL,
     TRANSFORMATION,
-    ChartTool,
+    NormalizeTool,
 )
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "STAGE",
     "STAGE_LABEL",
     "TRANSFORMATION",
-    "ChartTool",
+    "NormalizeTool",
 ]

@@ -1,4 +1,6 @@
 """Workflow stage: Analyze.
 
-See analytical_toolbox_workflow_spec.xlsx and prefix subpackages.
+Derive results by explicit methods: aggregates, calculations, classifications, comparisons, and scores.
+
+Prefix contracts live in the subpackages; see ``anatoolbox.stages``.
 """

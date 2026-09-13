@@ -20,7 +20,7 @@ PREFIX: str = "validate_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = (
     "Artifact to validate; validation rules; reference evidence; tolerances; required checks."
 )

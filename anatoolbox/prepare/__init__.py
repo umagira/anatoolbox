@@ -1,6 +1,6 @@
-"""Prepare stage — scope and plan research before Gather.
+"""Workflow stage: Prepare.
 
-Runs ahead of the evidence pipeline (brief for review/approval). Stage agents in
-the research runner still start at Gather; the brief is produced by the prepare
-gate / ``create_research_brief`` tool.
+Scope and plan the research before any evidence work: turn a request into a reviewable brief.
+
+Prefix contracts live in the subpackages; see ``anatoolbox.stages``.
 """

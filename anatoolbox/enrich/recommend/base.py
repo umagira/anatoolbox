@@ -20,7 +20,7 @@ PREFIX: str = "recommend_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Validated findings; decision objective; available actions; constraints; risk tolerance; evaluation criteria."
 ABSTRACT_OUTPUT: str = "Ranked or structured recommendations with rationale, expected effects, dependencies, risks, and evidence."
 TRANSFORMATION: str = "Convert evidence, assessments, and constraints into proposed actions, priorities, or decisions."

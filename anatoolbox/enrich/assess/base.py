@@ -20,7 +20,7 @@ PREFIX: str = "assess_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Evidence and analysis results; assessment framework; decision criteria; thresholds; contextual constraints."
 ABSTRACT_OUTPUT: str = "Assessment outcome, dimensions, evidence-backed rationale, uncertainty, counterevidence, and review state."
 TRANSFORMATION: str = "Apply a domain framework to reach a qualitative or categorical judgment about significance, quality, risk, opportunity, or materiality."

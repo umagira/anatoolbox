@@ -5,11 +5,11 @@ Two things live here, and they answer different questions.
 ``WorkingMemory``
     The original small slot bag on ``ToolContext.memory``. Pointers only,
     keyed by a fixed slot name. Still used where a tool needs one scalar
-    handle (an ESG report id) rather than a named dataset.
+    handle (a document id) rather than a named dataset.
 
 ``Memory`` / ``Recordset``
     Cross-stage dataflow. The analytical workflow runs
-    ``gather -> extract -> analyze -> enrich -> present`` and stages skip
+    ``gather -> preprocess -> extract -> analyze -> enrich`` and stages skip
     freely, but a tool almost always builds on the output of an earlier one.
     A Recordset is that output, named, so the later tool can bind to it
     without the records ever passing through the model's context.
@@ -18,8 +18,8 @@ Lifecycle, end to end
 ---------------------
 
 1. **Write.** A producing tool calls ``memory.remember(...)``, which allocates
-   a handle (``articles_1``), records provenance (which tool, which args,
-   which input handles) and stores either a reference (ids in Elasticsearch)
+   a handle (``passages_1``), records provenance (which tool, which args,
+   which input handles) and stores either a reference (ids in a source system)
    or a value (records held here, for derived output with no source system).
    Handles never repeat, so an old log line can never point at new data.
 

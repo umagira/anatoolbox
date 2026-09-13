@@ -20,7 +20,7 @@ PREFIX: str = "explain_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Result to explain; supporting and opposing evidence; method metadata; audience and detail level."
 ABSTRACT_OUTPUT: str = "Structured or narrative explanation with cited evidence, component contributions, caveats, and assumptions."
 TRANSFORMATION: str = "Produce a traceable, audience-appropriate rationale for a classification, metric, score, model result, or assessment."

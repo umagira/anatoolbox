@@ -21,11 +21,15 @@ within them a small, closed set of **task types**, each named by a prefix:
 | Stage | Task types |
 |---|---|
 | **Prepare** | `plan_` |
-| **Gather** | `retrieve_` `ingest_` `monitor_` |
-| **Extract** | `extract_` `parse_` `normalize_` `detect_` `resolve_` `deduplicate_` |
-| **Analyze** | `calculate_` `aggregate_` `classify_` `identify_` `compare_` `trend_` `score_` `model_` |
-| **Enrich** | `synthesize_` `enrich_` `benchmark_` `interpret_` `explain_` `assess_` `recommend_` `validate_` `weight_` `calibrate_` |
-| **Present** | `chart_` `tabulate_` `visualize_` `summarize_` `report_` `export_` |
+| **Gather** | `ingest_` `retrieve_` `rerank_` |
+| **Preprocess** | `parse_` `clean_` `normalize_` `deduplicate_` |
+| **Extract** | `extract_` `detect_` `resolve_` |
+| **Analyze** | `aggregate_` `calculate_` `classify_` `compare_` `score_` |
+| **Enrich** | `synthesize_` `enrich_` `benchmark_` `interpret_` `explain_` `assess_` `recommend_` `validate_` |
+
+Presentation — charts, tables, reports — is deliberately **not** a stage. It
+belongs in the frontend: a tool can declare how its result may be displayed
+(`render_type`), and the host application renders it.
 
 Each prefix ships a **contract**: abstract input, abstract output, a
 one-sentence transformation, and a `Protocol`. A concrete tool is named
@@ -147,7 +151,7 @@ embedding models, not basic functionality.
 
 | Area | State |
 |---|---|
-| Prefix contracts (34) | ✅ complete |
+| Prefix contracts (24) | ✅ complete |
 | Recordset memory | ✅ complete, pluggable store + policy |
 | Registry / plugin entry points | ✅ complete |
 | Local corpus backend (CSV/JSON/JSONL/Parquet) | ✅ complete |

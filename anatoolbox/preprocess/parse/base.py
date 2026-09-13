@@ -1,4 +1,4 @@
-"""parse_ tool family — Extract information stage.
+"""parse_ tool family — Preprocess stage.
 
 Convert a file or source format into machine-readable structural components without substantial domain interpretation.
 
@@ -17,10 +17,10 @@ from typing import Any, ClassVar, Protocol
 from anatoolbox.base import ToolContext, ToolSchema
 
 PREFIX: str = "parse_"
-STAGE: str = "extract"
-STAGE_LABEL: str = "Extract information"
+STAGE: str = "preprocess"
+STAGE_LABEL: str = "Preprocess"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Raw source artifact; file or content type; requested structural elements; parser configuration."
 ABSTRACT_OUTPUT: str = (
     "Document structure, sections, passages, tables, fields, and source locators."

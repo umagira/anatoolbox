@@ -20,7 +20,7 @@ PREFIX: str = "synthesize_"
 STAGE: str = "enrich"
 STAGE_LABEL: str = "Enrich and interpret"
 
-# Spec abstractions (analytical_toolbox_workflow_spec.xlsx).
+# The contract: what an instantiation consumes, produces, and does.
 ABSTRACT_INPUT: str = "Findings, claims, assessments, and evidence; synthesis objective; prioritization and contradiction policy."
 ABSTRACT_OUTPUT: str = "Integrated findings or claims with evidence links, confidence, contradictions, dependencies, and open questions."
 TRANSFORMATION: str = "Combine multiple findings and evidence streams into an integrated profile, conclusion, landscape, or decision view."
