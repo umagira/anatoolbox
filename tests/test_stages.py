@@ -13,7 +13,7 @@ from anatoolbox.stages import (
 EXPECTED_PREFIXES = {
     "prepare": {"plan_"},
     "gather": {"ingest_", "retrieve_", "rerank_"},
-    "preprocess": {"clean_", "deduplicate_", "normalize_", "parse_"},
+    "preprocess": {"chunk_", "clean_", "deduplicate_", "normalize_", "parse_"},
     "extract": {"detect_", "extract_", "resolve_"},
     "analyze": {"aggregate_", "calculate_", "classify_", "compare_", "score_"},
     "enrich": {
@@ -71,7 +71,7 @@ def test_every_stage_is_described():
 def test_prefixes_per_stage_are_exactly_the_taxonomy():
     for stage, expected in EXPECTED_PREFIXES.items():
         assert set(prefixes_for_stage(stage)) == expected, stage
-    assert len(prefix_to_stage()) == sum(len(p) for p in EXPECTED_PREFIXES.values()) == 24
+    assert len(prefix_to_stage()) == sum(len(p) for p in EXPECTED_PREFIXES.values()) == 25
 
 
 def test_prefixes_for_stage_is_sorted():
@@ -86,6 +86,7 @@ def test_stage_for_tool_name_uses_the_prefix():
     assert stage_for_tool_name("clean_boilerplate") == "preprocess"
     assert stage_for_tool_name("parse_pdf_report") == "preprocess"
     assert stage_for_tool_name("deduplicate_articles") == "preprocess"
+    assert stage_for_tool_name("chunk_articles_by_paragraph") == "preprocess"
     assert stage_for_tool_name("extract_entities") == "extract"
     assert stage_for_tool_name("aggregate_mentions_by_period") == "analyze"
     assert stage_for_tool_name("synthesize_answer") == "enrich"

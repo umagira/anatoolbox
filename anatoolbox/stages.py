@@ -33,7 +33,7 @@ STAGE_ORDER = [
 STAGE_DESCRIPTIONS = {
     "prepare": "Scope and plan the research before any evidence work: turn a request into a reviewable brief.",
     "gather": "Acquire source records — ingest, retrieve, and rerank them — without rewriting their meaning.",
-    "preprocess": "Prepare data for further analysis: parse, clean, normalize, and deduplicate it.",
+    "preprocess": "Prepare data for further analysis: parse, clean, normalize, deduplicate, and chunk it.",
     "extract": "Take raw data or information and extract the relevant subset in a given form: facts, entities, events, relationships.",
     "analyze": "Derive results by explicit methods: aggregates, calculations, classifications, comparisons, and scores.",
     "enrich": "Add context and judgment: synthesize evidence, interpret and explain results, assess, benchmark, validate, and recommend.",
