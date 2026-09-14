@@ -67,9 +67,13 @@ def register_reference_tools(*, registry: str = "default", replace: bool = False
     expected to consume — see the README. Importing anatoolbox registers
     nothing on its own; call this when you want them.
     """
+    from anatoolbox.enrich.synthesize.synthesize_answer import SynthesizeAnswerTool
     from anatoolbox.gather.ingest.ingest_corpus import IngestCorpusTool
     from anatoolbox.gather.rerank.rerank_passages import RerankPassagesTool
     from anatoolbox.gather.retrieve.retrieve_passages import RetrievePassagesTool
+    from anatoolbox.gather.rewrite.rewrite_query_for_retrieval import (
+        RewriteQueryForRetrievalTool,
+    )
     from anatoolbox.preprocess.chunk.chunk_articles_by_paragraph import (
         ChunkArticlesByParagraphTool,
     )
@@ -77,8 +81,10 @@ def register_reference_tools(*, registry: str = "default", replace: bool = False
     tools = [
         IngestCorpusTool(),
         ChunkArticlesByParagraphTool(),
+        RewriteQueryForRetrievalTool(),
         RetrievePassagesTool(),
         RerankPassagesTool(),
+        SynthesizeAnswerTool(),
     ]
     return [register_tool(t, registry=registry, replace=replace).schema.name for t in tools]
 

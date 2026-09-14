@@ -49,3 +49,72 @@ def make_tool(name, *, result=None):
 @pytest.fixture
 def tool_factory():
     return make_tool
+
+
+# --- scripted language model ---------------------------------------------------
+
+_LLM_ENV = (
+    "ANATOOLBOX_LLM_BASE_URL",
+    "ANATOOLBOX_LLM_API_KEY",
+    "ANATOOLBOX_LLM_MODEL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+)
+
+
+class FakeLLM:
+    """An OpenAI-compatible completions endpoint that replays scripted replies.
+
+    Replies are consumed in order. A list reply is streamed item by item; a
+    string streams per character when a stream is requested. Every request's
+    keyword arguments are kept in ``calls``.
+    """
+
+    def __init__(self):
+        self.replies = []
+        self.calls = []
+
+    def create(self, **kwargs):
+        from types import SimpleNamespace
+
+        self.calls.append(kwargs)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        if kwargs.get("stream"):
+            chunks = reply if isinstance(reply, list) else list(reply)
+            return iter(
+                SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))])
+                for c in chunks
+            )
+        text = "".join(reply) if isinstance(reply, list) else reply
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+    def system_prompt(self, call=0):
+        return self.calls[call]["messages"][0]["content"]
+
+    def user_prompt(self, call=0):
+        return self.calls[call]["messages"][1]["content"]
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    """Route every LLM call to a FakeLLM; roles map to distinct model names."""
+    from types import SimpleNamespace
+
+    from anatoolbox import llm_client
+
+    for name in _LLM_ENV:
+        monkeypatch.delenv(name, raising=False)
+    llm_client.reset_llm()
+    fake = FakeLLM()
+    llm_client.set_client_factory(
+        lambda **kwargs: SimpleNamespace(kwargs=kwargs, chat=SimpleNamespace(completions=fake))
+    )
+    llm_client.configure_llm(
+        api_key="test",
+        model="default-model",
+        models={"strong": "strong-model", "fast": "fast-model"},
+    )
+    yield fake
+    llm_client.reset_llm()

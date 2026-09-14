@@ -1,0 +1,283 @@
+"""rewrite_query_for_retrieval — turn a question into retrieval-ready queries.
+
+Runs before retrieval and never answers the question. Three strategies:
+
+* ``expand`` — several phrasings and aspects of a broad question. A question
+  like "What should we know about AI agents?" retrieves a little of everything;
+  targeted variants retrieve evidence for each angle.
+* ``decompose`` — one self-contained query per part of a compound question
+  ("How do Nvidia's and AMD's new accelerators compare?"), so no part goes
+  unretrieved.
+* ``clarify`` — one precise query that resolves vague terms while keeping
+  names, products and dates.
+
+The queries feed ``retrieve_passages(query=..., queries=[...])``, which ranks
+each one and fuses the rankings. ``exact_terms`` lists rare names and acronyms
+worth matching literally — the case where keyword search beats embeddings — and
+``time_range`` captures a period the question names, ready for ``date_from`` /
+``date_to``.
+
+The model comes from the ``fast`` role of ``anatoolbox.llm_client``, falling back
+to the default model. If the model returns no usable query, the original
+question is used and ``fallback`` says so.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date
+from typing import Any, ClassVar
+
+from anatoolbox.base import ToolContext, ToolSchema
+from anatoolbox.errors import ToolInputError
+from anatoolbox.gather.rewrite.base import PREFIX, STAGE
+from anatoolbox.llm_client import call_llm_json, model_for
+from anatoolbox.memory import value_ref
+
+TOOL_NAME = "rewrite_query_for_retrieval"
+OBJECT_TYPE = "queries"
+STRATEGIES = ("expand", "decompose", "clarify")
+DEFAULT_STRATEGY = "expand"
+DEFAULT_MAX_QUERIES = 3
+MAX_QUERIES_LIMIT = 8
+MAX_EXACT_TERMS = 10
+
+STRATEGY_INSTRUCTIONS = {
+    "expand": "Write up to {n} queries that cover different phrasings and aspects of the question, the most important first.",
+    "decompose": (
+        "If the question has several parts, write one self-contained query per part, up to {n}. "
+        "If it has only one part, write a single query."
+    ),
+    "clarify": "Write one precise, self-contained query that resolves vague terms while keeping every name, product and date.",
+}
+
+SYSTEM_PROMPT = """You turn a user's question into search queries for a document collection. You never answer the question.
+
+{strategy}
+
+Rules:
+- Keep names of companies, products, models and standards exactly as the user wrote them.
+- Every query must stand on its own, without pronouns that point back at the question.
+- purpose: a few words on what the query is meant to find.
+- exact_terms: rare names, acronyms or version numbers worth matching literally; an empty list if there are none.
+- time_range: ISO dates (YYYY-MM-DD) only when the question itself names a period — never the period the collection covers; otherwise null for both.{collection}"""
+
+RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["queries", "exact_terms", "time_range"],
+    "properties": {
+        "queries": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["query", "purpose"],
+                "properties": {"query": {"type": "string"}, "purpose": {"type": "string"}},
+            },
+        },
+        "exact_terms": {"type": "array", "items": {"type": "string"}},
+        "time_range": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["from", "to"],
+            "properties": {
+                "from": {"type": ["string", "null"]},
+                "to": {"type": ["string", "null"]},
+            },
+        },
+    },
+}
+
+
+def _iso_date(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(str(value).strip()[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def clean_reply(reply: Any, question: str, max_queries: int) -> dict[str, Any]:
+    """Validate a model reply: unique non-empty queries, capped; tidy terms; ISO dates only.
+
+    An inverted date range (start after end) is discarded rather than guessed at.
+    """
+    reply = reply if isinstance(reply, dict) else {}
+    queries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in reply.get("queries") or []:
+        if isinstance(item, str):
+            text, purpose = item, ""
+        elif isinstance(item, dict):
+            text, purpose = str(item.get("query") or ""), str(item.get("purpose") or "")
+        else:
+            continue
+        text = text.strip()
+        if not text or text.casefold() in seen:
+            continue
+        seen.add(text.casefold())
+        queries.append({"query": text, "purpose": purpose.strip()})
+        if len(queries) >= max_queries:
+            break
+    fallback = not queries
+    if fallback:
+        queries = [
+            {
+                "query": question,
+                "purpose": "the original question; the model returned no usable query",
+            }
+        ]
+
+    terms: list[str] = []
+    for term in reply.get("exact_terms") or []:
+        term = str(term).strip()
+        if term and term not in terms:
+            terms.append(term)
+    time_range = reply.get("time_range") if isinstance(reply.get("time_range"), dict) else {}
+    start, end = _iso_date(time_range.get("from")), _iso_date(time_range.get("to"))
+    if start and end and start > end:
+        start = end = None
+    return {
+        "queries": queries,
+        "exact_terms": terms[:MAX_EXACT_TERMS],
+        "time_range": {"from": start, "to": end},
+        "fallback": fallback,
+    }
+
+
+_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "question": {"type": "string", "description": "The user's question."},
+        "strategy": {
+            "type": "string",
+            "enum": list(STRATEGIES),
+            "default": DEFAULT_STRATEGY,
+            "description": (
+                "expand = several phrasings and aspects; decompose = one query per part of a "
+                "compound question; clarify = one precise query."
+            ),
+        },
+        "max_queries": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_QUERIES_LIMIT,
+            "default": DEFAULT_MAX_QUERIES,
+        },
+        "collection": {
+            "type": "string",
+            "description": "What the document collection covers, e.g. 'AI news articles, Sep 2024 – Aug 2025'.",
+        },
+        "model": {
+            "type": "string",
+            "description": "Model name; defaults to the configured fast role.",
+        },
+    },
+    "required": ["question"],
+}
+
+
+class RewriteQueryForRetrievalTool:
+    """Rewrite a question into queries for retrieval: expand, decompose, or clarify."""
+
+    prefix: ClassVar[str] = PREFIX
+    stage: ClassVar[str] = STAGE
+    tool_name: ClassVar[str] = TOOL_NAME
+    role: ClassVar[str] = "fast"
+
+    schema = ToolSchema(
+        name=TOOL_NAME,
+        description=(
+            "Rewrite a question into retrieval queries before searching: expand a broad question "
+            "into variants, decompose a compound one into parts, or clarify a vague one. Returns "
+            "queries for retrieve_passages(queries=...), exact terms, and any time range the "
+            "question names. Never answers the question."
+        ),
+        input_schema=_INPUT_SCHEMA,
+        render_type="json",
+    )
+
+    def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
+        question = str(args.get("question") or "").strip()
+        if not question:
+            raise ToolInputError(
+                code="missing_required_arguments",
+                message="Argument 'question' is required.",
+                tool_name=TOOL_NAME,
+                details={"missing": ["question"]},
+            )
+        strategy = str(args.get("strategy") or DEFAULT_STRATEGY).strip()
+        if strategy not in STRATEGIES:
+            raise ToolInputError(
+                code="invalid_argument_value",
+                message=f"strategy must be one of {list(STRATEGIES)}, got {strategy!r}.",
+                tool_name=TOOL_NAME,
+                details={"argument": "strategy", "value": strategy},
+            )
+        max_queries = args.get("max_queries", DEFAULT_MAX_QUERIES)
+        if (
+            isinstance(max_queries, bool)
+            or not isinstance(max_queries, int)
+            or not 1 <= max_queries <= MAX_QUERIES_LIMIT
+        ):
+            raise ToolInputError(
+                code="invalid_argument_value",
+                message=f"max_queries must be an integer from 1 to {MAX_QUERIES_LIMIT}, got {max_queries!r}.",
+                tool_name=TOOL_NAME,
+                details={"argument": "max_queries", "value": max_queries},
+            )
+        if strategy == "clarify":
+            max_queries = 1
+        collection = str(args.get("collection") or "").strip()
+
+        model = str(args.get("model") or "").strip() or model_for(self.role)
+        system = SYSTEM_PROMPT.format(
+            strategy=STRATEGY_INSTRUCTIONS[strategy].format(n=max_queries),
+            collection=f"\n- The collection covers: {collection}" if collection else "",
+        )
+        reply = call_llm_json(
+            system,
+            f"Question: {question}",
+            model=model,
+            temperature=0.0,
+            response_schema=RESPONSE_SCHEMA,
+            project=context.project,
+        )
+        cleaned = clean_reply(reply, question, max_queries)
+        result = {
+            "question": question,
+            "strategy": strategy,
+            **cleaned,
+            "query_texts": [q["query"] for q in cleaned["queries"]],
+            "model": model,
+        }
+        result["handle"] = self._remember(context, result, max_queries=max_queries)
+        return result
+
+    def _remember(
+        self, context: ToolContext, result: dict[str, Any], *, max_queries: int
+    ) -> str | None:
+        if context.recordsets is None:
+            return None
+        record = context.recordsets.remember(
+            object_type=OBJECT_TYPE,
+            stage=STAGE,
+            produced_by=TOOL_NAME,
+            args={
+                "question": result["question"],
+                "strategy": result["strategy"],
+                "max_queries": max_queries,
+                "model": result["model"],
+            },
+            ref=value_ref(result["queries"]),
+            count=len(result["queries"]),
+            summary=f"{len(result['queries'])} {result['strategy']} queries for {result['question']!r}",
+            derived_from=[],
+        )
+        return record.handle
+
+    def execute(self, args: dict[str, Any], *, context: ToolContext) -> str:
+        data = self.run(args, context=context)
+        return json.dumps({"render": {"render_type": "json", **data}, **data})

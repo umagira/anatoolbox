@@ -309,3 +309,89 @@ class TestRecencyAndFilters:
     def test_invalid_filters_are_tool_input_errors(self, ctx):
         with pytest.raises(ToolInputError, match="filters"):
             RetrievePassagesTool().run({"query": "agents", "filters": ["title"]}, context=ctx)
+
+
+class TestMultiQuery:
+    @pytest.fixture(autouse=True)
+    def ingested(self, corpus_file, ctx):
+        IngestCorpusTool().run({"path": str(corpus_file), "text_field": "content"}, context=ctx)
+
+    def test_a_single_query_finds_only_its_topic(self, ctx):
+        out = RetrievePassagesTool().run({"query": "accelerators"}, context=ctx)
+        assert {p["id"] for p in out["passages"]} == {"d2"}
+        assert out["queries"] is None
+
+    def test_extra_queries_are_ranked_and_fused(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "accelerators", "queries": ["foundation model"]}, context=ctx
+        )
+        assert {"d2", "d3"} <= {p["id"] for p in out["passages"]}
+        assert out["queries"] == ["accelerators", "foundation model"]
+
+    def test_repeated_phrasings_are_ignored(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "accelerators", "queries": ["Accelerators"]}, context=ctx
+        )
+        assert out["queries"] is None
+
+    def test_queries_are_recorded_in_provenance(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "accelerators", "queries": ["foundation model"]}, context=ctx
+        )
+        assert ctx.recordsets.get(out["handle"]).args["queries"] == [
+            "accelerators",
+            "foundation model",
+        ]
+
+    def test_fusion_respects_size(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "agents web", "queries": ["foundation model", "accelerators"], "size": 2},
+            context=ctx,
+        )
+        assert out["returned"] == 2
+
+    def test_invalid_queries_are_tool_input_errors(self, ctx):
+        with pytest.raises(ToolInputError, match="queries"):
+            RetrievePassagesTool().run({"query": "agents", "queries": [1, 2]}, context=ctx)
+
+
+class TestStoredQueries:
+    @pytest.fixture(autouse=True)
+    def ingested(self, corpus_file, ctx):
+        IngestCorpusTool().run({"path": str(corpus_file), "text_field": "content"}, context=ctx)
+
+    @staticmethod
+    def store(ctx, texts):
+        from anatoolbox.memory import value_ref
+
+        return ctx.recordsets.remember(
+            object_type="queries",
+            stage="gather",
+            produced_by="rewrite_query_for_retrieval",
+            args={"question": "q"},
+            ref=value_ref([{"query": text, "purpose": ""} for text in texts]),
+            count=len(texts),
+            summary="stored queries",
+        ).handle
+
+    def test_stored_queries_are_fused_and_recorded_in_lineage(self, ctx):
+        handle = self.store(ctx, ["foundation model"])
+        out = RetrievePassagesTool().run(
+            {"query": "accelerators", "queries_input": handle}, context=ctx
+        )
+        assert {"d2", "d3"} <= {p["id"] for p in out["passages"]}
+        assert out["queries_input_handle"] == handle
+        assert ctx.recordsets.get(out["handle"]).derived_from == ["corpus_1", handle]
+
+    def test_an_unknown_queries_handle_is_a_tool_input_error(self, ctx):
+        with pytest.raises(ToolInputError):
+            RetrievePassagesTool().run(
+                {"query": "agents", "queries_input": "queries_9"}, context=ctx
+            )
+
+    def test_queries_input_without_memory_is_explained(self, ctx):
+        with pytest.raises(ToolInputError, match="queries_input"):
+            RetrievePassagesTool().run(
+                {"query": "agents", "corpus": "ai_media", "queries_input": "queries_1"},
+                context=ToolContext(project="p", session_id="s"),
+            )

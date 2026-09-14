@@ -18,6 +18,10 @@ such as tags match on any shared value). ``recency_half_life_days`` multiplies
 each score by ``0.5 ** (age / half_life)`` so newer records rise. Age is
 measured from ``recency_reference_date``, which defaults to the newest date in
 the corpus, so a historical corpus is not penalized just for being old.
+
+``queries`` adds rewrites of the question (see ``rewrite_query_for_retrieval``):
+each query is ranked on its own and the rankings are fused with reciprocal
+rank fusion, so a document relevant to any phrasing can surface.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from anatoolbox.base import ToolContext, ToolSchema
 from anatoolbox.corpus import bind_corpus, ensure_bm25, ensure_embeddings, get_embedder, local_ref
 from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.retrieve.base import PREFIX, STAGE
-from anatoolbox.retrieval import STRATEGIES, rank_records
+from anatoolbox.retrieval import STRATEGIES, rank_records, reciprocal_rank_fusion
 
 TOOL_NAME = "retrieve_passages"
 OBJECT_TYPE = "passages"
@@ -83,6 +87,21 @@ _INPUT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": f"Record field holding the publication date (default: {DEFAULT_DATE_FIELD}).",
             "default": DEFAULT_DATE_FIELD,
+        },
+        "queries": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Additional phrasings of the query, e.g. from rewrite_query_for_retrieval. "
+                "Each is ranked separately and the rankings are fused."
+            ),
+        },
+        "queries_input": {
+            "type": "string",
+            "description": (
+                "Handle of stored queries from rewrite_query_for_retrieval, e.g. 'queries_1'. "
+                "They are fused like `queries`, and the lineage records where they came from."
+            ),
         },
         "filters": {
             "type": "object",
@@ -145,6 +164,15 @@ class RetrievePassagesTool:
         date_to = _parse_date(args.get("date_to"), "date_to")
         half_life = _parse_half_life(args.get("recency_half_life_days"))
         filters = _parse_filters(args.get("filters"))
+        extra_queries = _parse_queries(args.get("queries"))
+        queries_handle = None
+        requested_queries = args.get("queries_input")
+        if isinstance(requested_queries, str) and requested_queries.strip():
+            stored, queries_handle = self._stored_queries(
+                requested_queries.strip(), context=context
+            )
+            extra_queries = [*extra_queries, *stored]
+        all_queries = _unique_queries([query.strip(), *extra_queries])
 
         corpus, source_handle = self._resolve_corpus(args, context=context)
         records = corpus.records
@@ -163,20 +191,28 @@ class RetrievePassagesTool:
         if strategy in ("dense", "hybrid"):
             document_matrix = ensure_embeddings(corpus)
 
-        hits = rank_records(
-            query=query.strip(),
-            records=records,
-            texts=texts,
-            strategy=strategy,
-            size=size,
-            embedder=get_embedder() if strategy in ("dense", "hybrid") else None,
-            document_matrix=document_matrix,
-            bm25=ensure_bm25(corpus) if strategy in ("sparse", "hybrid") else None,
-            predicate=_all_of(
-                _date_predicate(date_field, date_from, date_to), _filter_predicate(filters)
-            ),
-            boost=boost,
-        )
+        def rank(text: str, limit: int):
+            return rank_records(
+                query=text,
+                records=records,
+                texts=texts,
+                strategy=strategy,
+                size=limit,
+                embedder=get_embedder() if strategy in ("dense", "hybrid") else None,
+                document_matrix=document_matrix,
+                bm25=ensure_bm25(corpus) if strategy in ("sparse", "hybrid") else None,
+                predicate=_all_of(
+                    _date_predicate(date_field, date_from, date_to), _filter_predicate(filters)
+                ),
+                boost=boost,
+            )
+
+        if len(all_queries) == 1:
+            hits = rank(all_queries[0], size)
+        else:
+            # Rank each phrasing deeper than `size`, then fuse by rank position.
+            pool = max(size * 3, 30)
+            hits = reciprocal_rank_fusion([rank(text, pool) for text in all_queries])[:size]
 
         passages = [
             {
@@ -204,6 +240,8 @@ class RetrievePassagesTool:
             "date_from": date_from.isoformat() if date_from else None,
             "date_to": date_to.isoformat() if date_to else None,
             "filters": filters or None,
+            "queries": all_queries if len(all_queries) > 1 else None,
+            "queries_input_handle": queries_handle,
             "recency_half_life_days": half_life,
             "recency_reference_date": reference_date.isoformat() if reference_date else None,
         }
@@ -214,14 +252,39 @@ class RetrievePassagesTool:
             query=query.strip(),
             strategy=strategy,
             source_handle=source_handle,
+            also_derived_from=[queries_handle] if queries_handle else None,
             date_range=(result["date_from"], result["date_to"]),
             extra_args={
                 key: result[key]
-                for key in ("filters", "recency_half_life_days", "recency_reference_date")
+                for key in (
+                    "filters",
+                    "queries",
+                    "recency_half_life_days",
+                    "recency_reference_date",
+                )
                 if result[key]
             },
         )
         return result
+
+    def _stored_queries(self, handle: str, *, context: ToolContext) -> tuple[list[str], str]:
+        """Query texts from a stored queries recordset, and the handle they were bound through."""
+        if context.recordsets is None:
+            raise ToolInputError(
+                code="missing_required_arguments",
+                message="queries_input needs recordset memory; pass the query texts as queries=[...] instead.",
+                tool_name=TOOL_NAME,
+                details={"argument": "queries_input"},
+            )
+        record = context.recordsets.bind(
+            object_type="queries", tool_name=TOOL_NAME, requested=handle
+        )
+        texts = []
+        for row in context.recordsets.records(record):
+            text = str(row.get("query") if isinstance(row, dict) else row).strip()
+            if text:
+                texts.append(text)
+        return texts, record.handle
 
     def _resolve_corpus(self, args: dict[str, Any], *, context: ToolContext):
         """Explicit corpus name wins; then a handle; then the newest corpus."""
@@ -238,6 +301,7 @@ class RetrievePassagesTool:
         source_handle: str | None,
         date_range: tuple = (None, None),
         extra_args: dict | None = None,
+        also_derived_from: list[str] | None = None,
     ) -> str | None:
         """Store the hit ids by reference, with lineage back to the corpus."""
         if context.recordsets is None:
@@ -257,7 +321,7 @@ class RetrievePassagesTool:
             ref=local_ref(corpus=corpus.name, ids=[p["id"] for p in passages]),
             count=len(passages),
             summary=f"{len(passages)} passages for {query!r} ({strategy})",
-            derived_from=[source_handle] if source_handle else [],
+            derived_from=[h for h in [source_handle, *(also_derived_from or [])] if h],
         )
         return record.handle
 
@@ -403,3 +467,29 @@ def _all_of(*predicates):
     if len(active) == 1:
         return active[0]
     return lambda record: all(p(record) for p in active)
+
+
+def _parse_queries(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(q, str) for q in value):
+        raise ToolInputError(
+            code="invalid_argument_value",
+            message="queries must be a list of strings.",
+            tool_name=TOOL_NAME,
+            details={"argument": "queries", "value": value},
+        )
+    return [q.strip() for q in value if q.strip()]
+
+
+def _unique_queries(texts: list[str]) -> list[str]:
+    """Drop repeated phrasings, ignoring case, keeping the first occurrence."""
+    seen: set[str] = set()
+    unique = []
+    for text in texts:
+        if text.casefold() not in seen:
+            seen.add(text.casefold())
+            unique.append(text)
+    return unique

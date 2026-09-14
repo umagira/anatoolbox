@@ -110,9 +110,11 @@ import anatoolbox
 from anatoolbox import ToolContext, resolve_tools
 
 anatoolbox.register_reference_tools()
-ingest, chunk, retrieve, rerank = resolve_tools(
-    ["ingest_corpus", "chunk_articles_by_paragraph", "retrieve_passages", "rerank_passages"]
+ingest, chunk, rewrite, retrieve, rerank, synthesize = resolve_tools(
+    ["ingest_corpus", "chunk_articles_by_paragraph", "rewrite_query_for_retrieval",
+     "retrieve_passages", "rerank_passages", "synthesize_answer"]
 )
+question = "Which standards for AI agents emerged, and who backs them?"
 
 ingest.run({"path": "ai_media.csv", "text_field": "content"}, context=ctx)
 # -> corpus_1
@@ -120,16 +122,42 @@ ingest.run({"path": "ai_media.csv", "text_field": "content"}, context=ctx)
 chunk.run({"target_words": 150}, context=ctx)
 # -> corpus_2: paragraph chunks, each linked to its article, derived_from ['corpus_1']
 
-retrieve.run({"query": "agentic web standards", "strategy": "hybrid", "size": 30}, context=ctx)
-# -> passages_1: a generous candidate set, derived_from ['corpus_2']
+rewrite.run({"question": question, "strategy": "decompose"}, context=ctx)
+# -> queries_1: one self-contained query per part of the question
 
-rerank.run({"keep": 5}, context=ctx)
+retrieve.run({"query": question, "queries_input": "queries_1", "strategy": "hybrid", "size": 30}, context=ctx)
+# -> passages_1: a generous candidate set, derived_from ['corpus_2', 'queries_1']
+
+rerank.run({"keep": 6}, context=ctx)
 # -> passages_2: the candidates re-scored on their full text, derived_from ['passages_1']
+
+synthesize.run({"question": question}, context=ctx)
+# -> answer_1: cited [S1]…[Sn], with invented labels, unused sources and
+#    citation coverage reported, derived_from ['passages_2']
 ```
 
 `strategy` is `sparse` (BM25), `dense` (embeddings), or `hybrid` (reciprocal
 rank fusion of the two) — so comparing retrieval strategies is a changed
 argument, not a changed pipeline.
+
+## Choose a language model
+
+Tools that need a language model use any OpenAI-compatible endpoint — OpenAI, a
+hosted provider, or a model on your own machine:
+
+```python
+from anatoolbox.llm_client import configure_llm
+
+configure_llm(model="gpt-4o-mini")                                     # OpenAI; key from OPENAI_API_KEY
+configure_llm(base_url="http://localhost:11434/v1", model="qwen3:4b")  # Ollama on your machine
+configure_llm(models={"fast": "qwen3:1.7b", "strong": "qwen3:14b"})   # different models per role
+```
+
+Or set `ANATOOLBOX_LLM_BASE_URL`, `ANATOOLBOX_LLM_API_KEY` and `ANATOOLBOX_LLM_MODEL`.
+There is no default model: which model produced an answer is part of the answer.
+Endpoints differ in what they accept, so parameters an endpoint rejects are dropped
+and remembered, and JSON requests fall back from strict schemas to JSON mode to
+prompt-only.
 
 ## Try-out notebooks
 
@@ -164,8 +192,10 @@ embedding models, not basic functionality.
 | Registry / plugin entry points | ✅ complete |
 | Local corpus backend (CSV/JSON/JSONL/Parquet) | ✅ complete |
 | Retrieval: BM25 / dense / hybrid | ✅ complete |
-| Reference instantiations | 🚧 `ingest_corpus`, `chunk_articles_by_paragraph`, `retrieve_passages`, `rerank_passages` |
-| Answering + evaluation tools | ❌ not yet |
+| Reference instantiations | 🚧 `ingest_corpus`, `chunk_articles_by_paragraph`, `rewrite_query_for_retrieval`, `retrieve_passages`, `rerank_passages`, `synthesize_answer` |
+| Any OpenAI-compatible LLM endpoint | ✅ complete |
+| Answer synthesis with checked citations | ✅ `synthesize_answer` |
+| Evaluation tools | ❌ not yet |
 | Docs site | ❌ not yet |
 
 ## License
