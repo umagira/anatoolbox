@@ -9,6 +9,7 @@ from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.rewrite.rewrite_query_for_retrieval import (
     RewriteQueryForRetrievalTool,
     clean_reply,
+    question_names_a_period,
 )
 from anatoolbox.memory.facade import Memory
 from anatoolbox.memory.policy import DefaultMemoryPolicy
@@ -109,7 +110,7 @@ def test_clean_reply_tolerates_plain_strings_bad_dates_and_junk():
             "exact_terms": None,
             "time_range": {"from": "last spring", "to": "2025-06-30T00:00"},
         },
-        "question",
+        "What happened by June 2025?",
         5,
     )
     assert [q["query"] for q in cleaned["queries"]] == ["a", "b"]
@@ -164,3 +165,32 @@ def test_the_prompt_rules_out_the_collection_period(fake_llm):
         {"question": QUESTION, "collection": "AI news, 2024-2025"}, context=bare()
     )
     assert "never the period the collection covers" in fake_llm.system_prompt()
+
+
+def test_a_time_range_the_question_does_not_name_is_dropped():
+    """Seen with Qwen3-0.6B (expand): it filled in the collection's span, 2024-09-01 to 2025-08-31."""
+    cleaned = clean_reply(
+        {
+            "queries": ["a"],
+            "exact_terms": [],
+            "time_range": {"from": "2024-09-01", "to": "2025-08-31"},
+        },
+        "What security risks do autonomous browser agents create?",
+        3,
+    )
+    assert cleaned["time_range"] == {"from": None, "to": None}
+
+
+@pytest.mark.parametrize(
+    "question, names_a_period",
+    [
+        ("What changed for AI agents in 2025?", True),
+        ("How did chip sales do in Q3?", True),
+        ("What happened since March?", True),
+        ("Which models appeared in the last 6 months?", True),
+        ("What risks may agents create?", False),
+        ("How are companies responding?", False),
+    ],
+)
+def test_question_names_a_period(question, names_a_period):
+    assert question_names_a_period(question) is names_a_period

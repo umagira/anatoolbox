@@ -169,6 +169,7 @@ downloaded from Kaggle's public API on first run — no Kaggle account needed.
 | Notebook | Covers |
 |---|---|
 | [`notebooks/day2_retrieval_ai_media.ipynb`](notebooks/day2_retrieval_ai_media.ipynb) | Ingesting the corpus, sparse/dense/hybrid retrieval, date windows, chunking, lineage |
+| [`notebooks/day3_rag_ai_media.ipynb`](notebooks/day3_rag_ai_media.ipynb) | Choosing an LLM endpoint, chunking, query rewriting, fused retrieval, reranking, cited answers with checked citations |
 
 ## Install
 

@@ -25,7 +25,9 @@ What happens between retrieval and the model matters as much as either:
 * **Context curation.** Duplicate passages are dropped before prompting, so
   the model is not shown the same evidence twice. Models attend least to the
   middle of a long context (Liu et al., 2023, "Lost in the Middle"), so by
-  default the most relevant passages go at the start and the end.
+  default the most relevant passages go at the start and the end. After
+  chunking, several chunks of one article can crowd the context;
+  ``max_per_source`` caps them.
 * **Dates in view.** Every source shows its publication date, and the
   instructions ask the model to use dates when the question concerns time.
 
@@ -64,6 +66,9 @@ _LABEL = re.compile(r"S\d+")
 #: A sentence ends at . ! or ? — possibly followed by a closing quote or bracket.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|(?<=[.!?][\"”'’)\]])\s+")
 _WORD = re.compile(r"[^\W_]")
+#: A line that begins with a label is a reference-list entry, not a statement.
+_REFERENCE_ENTRY = re.compile(r"^(?:[-*]\s*)?\[\s*S\d+")
+_SOURCE_LIST_HEADINGS = {"sources", "source", "references", "bibliography"}
 
 SYSTEM_PROMPT = """You answer questions using numbered sources from a document collection.
 
@@ -98,13 +103,16 @@ def curate(
     max_passages: int = DEFAULT_MAX_PASSAGES,
     max_chars: int = DEFAULT_MAX_CHARS,
     order: str = DEFAULT_ORDER,
-) -> tuple[list[dict[str, Any]], int]:
+    max_per_source: int | None = None,
+) -> tuple[list[dict[str, Any]], int, int]:
     """Deduplicate, cap, truncate, label and order passages for a prompt.
 
     ``passages`` arrive in relevance order, each with a ``text``. Labels follow
     relevance (S1 is the most relevant); ``position`` is the place in the
-    prompt. Returns the curated sources in prompt order and how many
-    duplicates were dropped.
+    prompt. ``max_per_source`` keeps at most that many passages per article
+    (``source_id``, else ``id``) so one source cannot crowd out the rest.
+    Returns the curated sources in prompt order, the number of duplicates
+    dropped, and the number dropped by the per-source limit.
     """
     seen: set[str] = set()
     kept: list[dict[str, Any]] = []
@@ -118,6 +126,19 @@ def curate(
             continue
         seen.add(key)
         kept.append(passage)
+
+    over_limit = 0
+    if max_per_source is not None:
+        per_source: dict[str, int] = {}
+        diverse = []
+        for passage in kept:
+            key = str(passage.get("source_id") or passage.get("id"))
+            if per_source.get(key, 0) >= max_per_source:
+                over_limit += 1
+                continue
+            per_source[key] = per_source.get(key, 0) + 1
+            diverse.append(passage)
+        kept = diverse
 
     labelled = []
     for rank, passage in enumerate(kept[:max_passages], start=1):
@@ -133,7 +154,7 @@ def curate(
         labelled = front + back[::-1]
     for position, source in enumerate(labelled, start=1):
         source["position"] = position
-    return labelled, duplicates
+    return labelled, duplicates, over_limit
 
 
 def build_user_prompt(
@@ -171,12 +192,17 @@ def citation_coverage(answer: str) -> dict[str, Any]:
     after a sentence on the same line ("... restricted. [S2]") counts for that
     sentence; a line made only of citations — small models like to list every
     label at the end — supports no particular sentence and counts for nothing.
-    Headings are not statements. This is a count, not a verdict: a cited
+    Headings are not statements. A source list the model writes itself — a
+    "Sources:" heading, or lines that begin with a label — is not counted:
+    it attributes no sentence. This is a count, not a verdict: a cited
     sentence can still misstate its source.
     """
     cited_flags: list[bool] = []
     for line in answer.splitlines():
-        if line.lstrip().startswith("#"):
+        stripped = line.strip()
+        if stripped.strip("*#_ ").rstrip(":").strip().casefold() in _SOURCE_LIST_HEADINGS:
+            break
+        if stripped.startswith("#") or _REFERENCE_ENTRY.match(stripped):
             continue
         previous = None
         for piece in _SENTENCE_END.split(line):
@@ -262,6 +288,11 @@ _INPUT_SCHEMA: dict[str, Any] = {
         },
         "max_passages": {"type": "integer", "minimum": 1, "default": DEFAULT_MAX_PASSAGES},
         "max_chars_per_passage": {"type": "integer", "minimum": 1, "default": DEFAULT_MAX_CHARS},
+        "max_per_source": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "At most this many passages from one article (by source_id).",
+        },
         "instructions": {
             "type": "string",
             "description": "Optional extra instructions, e.g. audience, format or length.",
@@ -317,11 +348,16 @@ class SynthesizeAnswerTool:
         max_passages = _positive_int(args, "max_passages", DEFAULT_MAX_PASSAGES)
         max_chars = _positive_int(args, "max_chars_per_passage", DEFAULT_MAX_CHARS)
         max_tokens = _positive_int(args, "max_tokens", None)
+        max_per_source = _positive_int(args, "max_per_source", None)
         instructions = str(args.get("instructions") or "").strip() or None
 
         passages, input_handle = self._passages(args, context=context)
-        sources, duplicates = curate(
-            passages, max_passages=max_passages, max_chars=max_chars, order=order
+        sources, duplicates, over_limit = curate(
+            passages,
+            max_passages=max_passages,
+            max_chars=max_chars,
+            order=order,
+            max_per_source=max_per_source,
         )
         if not sources:
             raise ToolInputError(
@@ -346,6 +382,7 @@ class SynthesizeAnswerTool:
         by_rank = sorted(sources, key=lambda source: source["rank"])
         result = {
             "question": question,
+            "max_per_source": max_per_source,
             "mode": mode,
             "order": order,
             "model": model,
@@ -365,6 +402,7 @@ class SynthesizeAnswerTool:
             "unknown_citations": [label for label in cited if label not in by_label],
             "uncited_sources": [s["label"] for s in by_rank if s["label"] not in cited],
             "dropped_duplicates": duplicates,
+            "dropped_over_source_limit": over_limit,
             **citation_coverage(answer),
             "input_handle": input_handle,
         }
@@ -442,6 +480,7 @@ class SynthesizeAnswerTool:
                 "order": result["order"],
                 "model": result["model"],
                 "max_passages": max_passages,
+                "max_per_source": result["max_per_source"],
             },
             ref=value_ref(
                 [

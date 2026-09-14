@@ -54,6 +54,14 @@ _INPUT_SCHEMA: dict[str, Any] = {
             "default": DEFAULT_KEEP,
             "description": "How many passages to keep after reranking.",
         },
+        "max_per_source": {
+            "type": "integer",
+            "minimum": 1,
+            "description": (
+                "Keep at most this many passages from one article (by source_id), so chunks "
+                "of a single article cannot fill every slot."
+            ),
+        },
         "max_chars": {
             "type": "integer",
             "minimum": 1,
@@ -105,6 +113,9 @@ class RerankPassagesTool:
     def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
         keep = _positive_int(args, "keep", DEFAULT_KEEP)
         max_chars = _positive_int(args, "max_chars", DEFAULT_MAX_CHARS)
+        max_per_source = (
+            None if args.get("max_per_source") is None else _positive_int(args, "max_per_source", 1)
+        )
         candidates, corpus_name, candidate_handle, candidate_query = self._candidates(
             args, context=context
         )
@@ -126,7 +137,18 @@ class RerankPassagesTool:
             )
 
         scores = rerank_texts(query, [text[:max_chars] for _, text, _ in candidates])
-        order = sorted(range(len(candidates)), key=lambda i: (-scores[i], i))[:keep]
+        order: list[int] = []
+        per_source: dict[str, int] = {}
+        skipped = 0
+        for i in sorted(range(len(candidates)), key=lambda i: (-scores[i], i)):
+            if len(order) >= keep:
+                break
+            source_key = str(candidates[i][2].get("source_id") or candidates[i][0])
+            if max_per_source is not None and per_source.get(source_key, 0) >= max_per_source:
+                skipped += 1
+                continue
+            per_source[source_key] = per_source.get(source_key, 0) + 1
+            order.append(i)
         passages = []
         for new_rank, i in enumerate(order, start=1):
             passage_id, text, metadata = candidates[i]
@@ -149,6 +171,7 @@ class RerankPassagesTool:
             "corpus": corpus_name,
             "candidates": len(candidates),
             "returned": len(passages),
+            "skipped_over_source_limit": skipped,
             "passages": passages,
             "input_handle": candidate_handle,
         }
@@ -160,6 +183,7 @@ class RerankPassagesTool:
             settings={
                 "query": query,
                 "keep": keep,
+                "max_per_source": max_per_source,
                 "max_chars": max_chars,
                 "reranker": label,
                 "candidates": len(candidates),

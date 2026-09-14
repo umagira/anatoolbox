@@ -15,7 +15,8 @@ The queries feed ``retrieve_passages(query=..., queries=[...])``, which ranks
 each one and fuses the rankings. ``exact_terms`` lists rare names and acronyms
 worth matching literally — the case where keyword search beats embeddings — and
 ``time_range`` captures a period the question names, ready for ``date_from`` /
-``date_to``.
+``date_to``. Small models like to fill it in from the collection's own time span,
+so a range is only kept when the question itself mentions a period.
 
 The model comes from the ``fast`` role of ``anatoolbox.llm_client``, falling back
 to the default model. If the model returns no usable query, the original
@@ -25,6 +26,7 @@ question is used and ``fallback`` says so.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from typing import Any, ClassVar
 
@@ -41,6 +43,23 @@ DEFAULT_STRATEGY = "expand"
 DEFAULT_MAX_QUERIES = 3
 MAX_QUERIES_LIMIT = 8
 MAX_EXACT_TERMS = 10
+
+# A year, quarter, month name, or a period phrase. "may" is left out on purpose:
+# it is far more often a verb than a month, and "May 2025" matches on the year.
+_PERIOD_HINT = re.compile(
+    r"\b(?:19|20)\d{2}\b"
+    r"|\bq[1-4]\b"
+    r"|\b(?:january|february|march|april|june|july|august|september|october|november|december)\b"
+    r"|\b(?:since|until|before|after|between|during)\b"
+    r"|\b(?:last|this|past|previous)\s+(?:\d+\s+)?(?:days?|weeks?|months?|quarters?|years?)\b",
+    re.IGNORECASE,
+)
+
+
+def question_names_a_period(question: str) -> bool:
+    """Whether a question mentions a time period a date range could come from."""
+    return bool(_PERIOD_HINT.search(question or ""))
+
 
 STRATEGY_INSTRUCTIONS = {
     "expand": "Write up to {n} queries that cover different phrasings and aspects of the question, the most important first.",
@@ -102,7 +121,9 @@ def _iso_date(value: Any) -> str | None:
 def clean_reply(reply: Any, question: str, max_queries: int) -> dict[str, Any]:
     """Validate a model reply: unique non-empty queries, capped; tidy terms; ISO dates only.
 
-    An inverted date range (start after end) is discarded rather than guessed at.
+    A date range is discarded when it is inverted, or when the question names
+    no period at all — the model then invented it, typically from the
+    collection's own time span.
     """
     reply = reply if isinstance(reply, dict) else {}
     queries: list[dict[str, str]] = []
@@ -137,7 +158,7 @@ def clean_reply(reply: Any, question: str, max_queries: int) -> dict[str, Any]:
             terms.append(term)
     time_range = reply.get("time_range") if isinstance(reply.get("time_range"), dict) else {}
     start, end = _iso_date(time_range.get("from")), _iso_date(time_range.get("to"))
-    if start and end and start > end:
+    if (start and end and start > end) or not question_names_a_period(question):
         start = end = None
     return {
         "queries": queries,

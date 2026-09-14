@@ -175,7 +175,7 @@ class TestCuration:
         assert [s["label"] for s in out["sources"]] == ["S1", "S2"]
 
     def test_curate_reports_rank_and_position(self):
-        sources, _ = curate(explicit(3), order="edges")
+        sources, _, _ = curate(explicit(3), order="edges")
         assert [(s["label"], s["rank"], s["position"]) for s in sources] == [
             ("S1", 1, 1),
             ("S3", 3, 2),
@@ -279,4 +279,45 @@ class TestCitationCoverage:
         assert "Do not collect citations at the end" in fake_llm.system_prompt()
         assert (
             ctx.recordsets.records(ctx.recordsets.get(out["handle"]))[0]["citation_coverage"] == 0.5
+        )
+
+
+class TestSourceDiversityAndSourceLists:
+    def test_max_per_source_keeps_one_article_from_crowding_out_others(self, fake_llm):
+        """Seen on the dataset: 3 of 6 answer passages were chunks of one article."""
+        fake_llm.replies = [["ok"]]
+        passages = [
+            {"id": "a#0", "source_id": "a", "text": "one"},
+            {"id": "a#1", "source_id": "a", "text": "two"},
+            {"id": "a#2", "source_id": "a", "text": "three"},
+            {"id": "b#0", "source_id": "b", "text": "four"},
+        ]
+        out = SynthesizeAnswerTool().run(
+            {"question": "q", "passages": passages, "max_passages": 3, "max_per_source": 2},
+            context=bare(),
+        )
+        assert [s["id"] for s in out["sources"]] == ["a#0", "a#1", "b#0"]
+        assert out["dropped_over_source_limit"] == 1
+
+    def test_without_a_limit_nothing_is_dropped_for_diversity(self, fake_llm):
+        fake_llm.replies = [["ok"]]
+        passages = [{"id": f"a#{i}", "source_id": "a", "text": f"t{i}"} for i in range(3)]
+        out = SynthesizeAnswerTool().run({"question": "q", "passages": passages}, context=bare())
+        assert out["dropped_over_source_limit"] == 0 and len(out["sources"]) == 3
+
+    def test_a_model_written_source_list_is_not_counted(self):
+        """Seen with Qwen3-0.6B in blended mode, despite being told not to write one."""
+        answer = (
+            "Agents create risks [S1]. Companies respond.\n\nSources:\n"
+            "[S1] AI Briefing · 2024-12-16\n[S2] Other article · 2025-01-01"
+        )
+        result = citation_coverage(answer)
+        assert (result["statements"], result["statements_with_citations"]) == (2, 1)
+
+    def test_reference_entries_without_a_heading_are_skipped(self):
+        assert citation_coverage("Claim [S1].\n- [S1] Title, 2025")["statements"] == 1
+
+    def test_a_bold_sources_heading_also_ends_counting(self):
+        assert (
+            citation_coverage("Claim [S1].\n\n**Sources:**\nSee the list [S2].")["statements"] == 1
         )

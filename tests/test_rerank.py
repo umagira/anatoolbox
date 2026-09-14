@@ -181,3 +181,30 @@ def test_reranker_label_falls_back_to_the_function_name():
     assert reranker_label() == "keyword_reranker"
     configure_reranker(None)
     assert reranker_label() == DEFAULT_RERANK_MODEL
+
+
+def test_max_per_source_diversifies_the_kept_passages():
+    """After chunking, several chunks of one article can otherwise fill every slot."""
+    passages = [
+        {"id": "x#0", "source_id": "x", "text": "protocol protocol protocol"},
+        {"id": "x#1", "source_id": "x", "text": "protocol protocol"},
+        {"id": "y#0", "source_id": "y", "text": "protocol"},
+    ]
+    out = RerankPassagesTool().run(
+        {"query": "find protocol", "passages": passages, "keep": 2, "max_per_source": 1},
+        context=ToolContext(project="p", session_id="s"),
+    )
+    assert [p["id"] for p in out["passages"]] == ["x#0", "y#0"]
+    assert out["skipped_over_source_limit"] == 1
+
+
+def test_without_a_source_limit_the_best_scores_win(ctx):
+    retrieve(ctx)
+    out = RerankPassagesTool().run({"keep": 3}, context=ctx)
+    assert out["skipped_over_source_limit"] == 0
+
+
+def test_invalid_max_per_source(ctx):
+    retrieve(ctx)
+    with pytest.raises(ToolInputError, match="max_per_source"):
+        RerankPassagesTool().run({"max_per_source": 0}, context=ctx)
