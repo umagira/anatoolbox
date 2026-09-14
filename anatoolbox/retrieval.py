@@ -220,11 +220,17 @@ def rank_records(
     document_matrix: Any | None = None,
     predicate: Predicate | None = None,
     bm25: BM25Index | None = None,
+    boost: Callable[[dict], float] | None = None,
 ) -> list[Hit]:
     """Rank ``records`` for ``query`` and return at most ``size`` allowed hits.
 
     ``document_matrix`` lets a caller reuse precomputed embeddings; without
     it, dense strategies embed ``texts`` on the spot.
+
+    ``boost`` multiplies each candidate's score by a per-record factor (for
+    example a recency decay) and re-sorts the whole ranking before the walk,
+    so a boost can move a record into the top ``size`` rather than only
+    reorder the records already there.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"Unknown strategy {strategy!r}. Choose from {STRATEGIES}.")
@@ -245,6 +251,18 @@ def rank_records(
         rankings.append(dense_rank(query_vector, matrix))
 
     ranking = rankings[0] if len(rankings) == 1 else reciprocal_rank_fusion(rankings)
+    if boost is not None:
+        ranking = sorted(
+            (
+                Hit(
+                    index=hit.index,
+                    score=hit.score * boost(records[hit.index]),
+                    strategy=hit.strategy,
+                )
+                for hit in ranking
+            ),
+            key=lambda hit: (-hit.score, hit.index),
+        )
 
     # Walk, don't slice: filtering after a slice silently under-fills.
     kept: list[Hit] = []

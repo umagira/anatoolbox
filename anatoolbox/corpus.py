@@ -482,3 +482,56 @@ def _require_numpy_for_corpus() -> Any:
             "Saving or loading embeddings needs numpy: pip install 'anatoolbox[local]'"
         ) from exc
     return np
+
+
+# --- consumer binding ------------------------------------------------------
+
+
+def bind_corpus(
+    args: dict[str, Any], context: Any, *, tool_name: str
+) -> tuple[LocalCorpus, str | None]:
+    """Resolve which corpus a consuming tool works on.
+
+    Precedence follows the consumer rules: an explicit ``corpus`` name, then an
+    ``input`` handle, then the newest ``corpus`` recordset in memory. Returns
+    the corpus and the handle it was bound through (None for an explicit name).
+    """
+    from anatoolbox.errors import ToolInputError
+
+    named = str(args.get("corpus") or "").strip()
+    if named:
+        return _corpus_or_input_error(named, tool_name), None
+
+    recordsets = getattr(context, "recordsets", None)
+    if recordsets is None:
+        raise ToolInputError(
+            code="missing_required_arguments",
+            message=(
+                "No corpus given and no recordset memory available. "
+                "Pass corpus='<name>', or run ingest_corpus first."
+            ),
+            tool_name=tool_name,
+            details={"missing": ["corpus"]},
+        )
+    requested = args.get("input")
+    record = recordsets.bind(
+        object_type="corpus",
+        tool_name=tool_name,
+        requested=requested.strip() if isinstance(requested, str) and requested.strip() else None,
+    )
+    name = str(record.ref.get("corpus") or record.args.get("corpus") or "")
+    return _corpus_or_input_error(name, tool_name), record.handle
+
+
+def _corpus_or_input_error(name: str, tool_name: str) -> LocalCorpus:
+    from anatoolbox.errors import ToolInputError
+
+    try:
+        return get_corpus(name)
+    except KeyError as exc:
+        raise ToolInputError(
+            code="unknown_corpus",
+            message=str(exc.args[0]) if exc.args else f"No corpus named {name!r}.",
+            tool_name=tool_name,
+            details={"corpus": name},
+        ) from exc

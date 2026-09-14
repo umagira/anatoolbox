@@ -110,13 +110,21 @@ import anatoolbox
 from anatoolbox import ToolContext, resolve_tools
 
 anatoolbox.register_reference_tools()
-ingest, retrieve = resolve_tools(["ingest_corpus", "retrieve_passages"])
+ingest, chunk, retrieve, rerank = resolve_tools(
+    ["ingest_corpus", "chunk_articles_by_paragraph", "retrieve_passages", "rerank_passages"]
+)
 
 ingest.run({"path": "ai_media.csv", "text_field": "content"}, context=ctx)
 # -> corpus_1
 
-retrieve.run({"query": "agentic web standards", "strategy": "sparse"}, context=ctx)
-# -> passages_1, derived_from ['corpus_1']
+chunk.run({"target_words": 150}, context=ctx)
+# -> corpus_2: paragraph chunks, each linked to its article, derived_from ['corpus_1']
+
+retrieve.run({"query": "agentic web standards", "strategy": "hybrid", "size": 30}, context=ctx)
+# -> passages_1: a generous candidate set, derived_from ['corpus_2']
+
+rerank.run({"keep": 5}, context=ctx)
+# -> passages_2: the candidates re-scored on their full text, derived_from ['passages_1']
 ```
 
 `strategy` is `sparse` (BM25), `dense` (embeddings), or `hybrid` (reciprocal
@@ -156,7 +164,7 @@ embedding models, not basic functionality.
 | Registry / plugin entry points | ✅ complete |
 | Local corpus backend (CSV/JSON/JSONL/Parquet) | ✅ complete |
 | Retrieval: BM25 / dense / hybrid | ✅ complete |
-| Reference instantiations | 🚧 `ingest_corpus`, `retrieve_passages` |
+| Reference instantiations | 🚧 `ingest_corpus`, `chunk_articles_by_paragraph`, `retrieve_passages`, `rerank_passages` |
 | Answering + evaluation tools | ❌ not yet |
 | Docs site | ❌ not yet |
 

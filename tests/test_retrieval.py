@@ -174,3 +174,29 @@ class TestRankRecords:
             document_matrix=_embedder(TEXTS),
         )
         assert calls == [1], "only the query should be embedded"
+
+
+def test_boost_reorders_before_walking():
+    """A boost must be able to bring a record into the top `size`, not just reorder it."""
+    hits = rank_records(
+        query="agents web",
+        records=RECORDS,
+        texts=TEXTS,
+        strategy="sparse",
+        size=1,
+        boost=lambda record: 0.0 if record["i"] == 0 else 1.0,
+    )
+    assert [h.index for h in hits] == [3]
+
+
+def test_boost_multiplies_scores():
+    base = rank_records(query="agents web", records=RECORDS, texts=TEXTS, strategy="sparse", size=4)
+    boosted = rank_records(
+        query="agents web",
+        records=RECORDS,
+        texts=TEXTS,
+        strategy="sparse",
+        size=4,
+        boost=lambda r: 2.0,
+    )
+    assert [round(h.score, 9) for h in boosted] == [round(2 * h.score, 9) for h in base]

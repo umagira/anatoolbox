@@ -68,9 +68,18 @@ def register_reference_tools(*, registry: str = "default", replace: bool = False
     nothing on its own; call this when you want them.
     """
     from anatoolbox.gather.ingest.ingest_corpus import IngestCorpusTool
+    from anatoolbox.gather.rerank.rerank_passages import RerankPassagesTool
     from anatoolbox.gather.retrieve.retrieve_passages import RetrievePassagesTool
+    from anatoolbox.preprocess.chunk.chunk_articles_by_paragraph import (
+        ChunkArticlesByParagraphTool,
+    )
 
-    tools = [IngestCorpusTool(), RetrievePassagesTool()]
+    tools = [
+        IngestCorpusTool(),
+        ChunkArticlesByParagraphTool(),
+        RetrievePassagesTool(),
+        RerankPassagesTool(),
+    ]
     return [register_tool(t, registry=registry, replace=replace).schema.name for t in tools]
 
 

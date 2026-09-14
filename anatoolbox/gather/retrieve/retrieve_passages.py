@@ -11,6 +11,13 @@ Binding follows the usual consumer rules: an explicit ``input`` handle wins,
 otherwise the newest corpus in memory is used. The result is remembered as a
 ``passages`` recordset whose lineage names the corpus it came from, so a later
 score or table can say exactly which evidence it rests on.
+
+Two ranking controls beyond the strategy. ``filters`` restrict results to
+records whose metadata matches (``{"domain": ["venturebeat"]}``; list fields
+such as tags match on any shared value). ``recency_half_life_days`` multiplies
+each score by ``0.5 ** (age / half_life)`` so newer records rise. Age is
+measured from ``recency_reference_date``, which defaults to the newest date in
+the corpus, so a historical corpus is not penalized just for being old.
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ from datetime import date
 from typing import Any, ClassVar
 
 from anatoolbox.base import ToolContext, ToolSchema
-from anatoolbox.corpus import ensure_bm25, ensure_embeddings, get_corpus, get_embedder, local_ref
+from anatoolbox.corpus import bind_corpus, ensure_bm25, ensure_embeddings, get_embedder, local_ref
 from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.retrieve.base import PREFIX, STAGE
 from anatoolbox.retrieval import STRATEGIES, rank_records
@@ -77,6 +84,22 @@ _INPUT_SCHEMA: dict[str, Any] = {
             "description": f"Record field holding the publication date (default: {DEFAULT_DATE_FIELD}).",
             "default": DEFAULT_DATE_FIELD,
         },
+        "filters": {
+            "type": "object",
+            "description": (
+                "Only records whose metadata matches: field name -> value or list of values. "
+                "List fields such as tags match on any shared value."
+            ),
+        },
+        "recency_half_life_days": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Favor newer records: a record this many days older scores half as much.",
+        },
+        "recency_reference_date": {
+            "type": "string",
+            "description": "ISO date that ages are measured from (default: newest date in the corpus).",
+        },
     },
     "required": ["query"],
 }
@@ -120,10 +143,21 @@ class RetrievePassagesTool:
         date_field = (args.get("date_field") or DEFAULT_DATE_FIELD).strip()
         date_from = _parse_date(args.get("date_from"), "date_from")
         date_to = _parse_date(args.get("date_to"), "date_to")
+        half_life = _parse_half_life(args.get("recency_half_life_days"))
+        filters = _parse_filters(args.get("filters"))
 
         corpus, source_handle = self._resolve_corpus(args, context=context)
         records = corpus.records
         texts = corpus.texts()
+
+        reference_date = None
+        boost = None
+        if half_life is not None:
+            reference_date = _parse_date(
+                args.get("recency_reference_date"), "recency_reference_date"
+            ) or _latest_date(records, date_field)
+            if reference_date is not None:
+                boost = _recency_boost(date_field, reference_date, half_life)
 
         document_matrix = None
         if strategy in ("dense", "hybrid"):
@@ -138,7 +172,10 @@ class RetrievePassagesTool:
             embedder=get_embedder() if strategy in ("dense", "hybrid") else None,
             document_matrix=document_matrix,
             bm25=ensure_bm25(corpus) if strategy in ("sparse", "hybrid") else None,
-            predicate=_date_predicate(date_field, date_from, date_to),
+            predicate=_all_of(
+                _date_predicate(date_field, date_from, date_to), _filter_predicate(filters)
+            ),
+            boost=boost,
         )
 
         passages = [
@@ -166,6 +203,9 @@ class RetrievePassagesTool:
             "input_handle": source_handle,
             "date_from": date_from.isoformat() if date_from else None,
             "date_to": date_to.isoformat() if date_to else None,
+            "filters": filters or None,
+            "recency_half_life_days": half_life,
+            "recency_reference_date": reference_date.isoformat() if reference_date else None,
         }
         result["handle"] = self._remember(
             context,
@@ -175,35 +215,17 @@ class RetrievePassagesTool:
             strategy=strategy,
             source_handle=source_handle,
             date_range=(result["date_from"], result["date_to"]),
+            extra_args={
+                key: result[key]
+                for key in ("filters", "recency_half_life_days", "recency_reference_date")
+                if result[key]
+            },
         )
         return result
 
     def _resolve_corpus(self, args: dict[str, Any], *, context: ToolContext):
         """Explicit corpus name wins; then a handle; then the newest corpus."""
-        named = (args.get("corpus") or "").strip()
-        if named:
-            return get_corpus(named), None
-
-        if context.recordsets is None:
-            raise ToolInputError(
-                code="missing_required_arguments",
-                message=(
-                    "No corpus given and no recordset memory available. "
-                    "Pass corpus='<name>', or run ingest_corpus first."
-                ),
-                tool_name=TOOL_NAME,
-                details={"missing": ["corpus"]},
-            )
-        requested = args.get("input")
-        record = context.recordsets.bind(
-            object_type=CORPUS_OBJECT_TYPE,
-            tool_name=TOOL_NAME,
-            requested=requested.strip()
-            if isinstance(requested, str) and requested.strip()
-            else None,
-        )
-        corpus_name = str(record.ref.get("corpus") or record.args.get("corpus") or "")
-        return get_corpus(corpus_name), record.handle
+        return bind_corpus(args, context, tool_name=TOOL_NAME)
 
     def _remember(
         self,
@@ -215,6 +237,7 @@ class RetrievePassagesTool:
         strategy: str,
         source_handle: str | None,
         date_range: tuple = (None, None),
+        extra_args: dict | None = None,
     ) -> str | None:
         """Store the hit ids by reference, with lineage back to the corpus."""
         if context.recordsets is None:
@@ -229,6 +252,7 @@ class RetrievePassagesTool:
                 "corpus": corpus.name,
                 **({"date_from": date_range[0]} if date_range[0] else {}),
                 **({"date_to": date_range[1]} if date_range[1] else {}),
+                **(extra_args or {}),
             },
             ref=local_ref(corpus=corpus.name, ids=[p["id"] for p in passages]),
             count=len(passages),
@@ -288,3 +312,94 @@ def _date_predicate(field: str, date_from: date | None, date_to: date | None):
         return True
 
     return in_range
+
+
+def _published(record: dict, field: str) -> date | None:
+    try:
+        return date.fromisoformat(str(record.get(field)).strip()[:10])
+    except ValueError:
+        return None
+
+
+def _latest_date(records: list[dict], field: str) -> date | None:
+    dates = [d for d in (_published(r, field) for r in records) if d is not None]
+    return max(dates) if dates else None
+
+
+def _parse_half_life(value: Any) -> float | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        days = 0.0
+    if isinstance(value, bool) or days <= 0:
+        raise ToolInputError(
+            code="invalid_argument_value",
+            message=f"recency_half_life_days must be a positive number of days, got {value!r}.",
+            tool_name=TOOL_NAME,
+            details={"argument": "recency_half_life_days", "value": value},
+        )
+    return days
+
+
+def _recency_boost(field: str, reference: date, half_life: float):
+    """Score multiplier ``0.5 ** (age / half_life)``.
+
+    A record dated after the reference date counts as age 0. A record with no
+    usable date gets a factor of 0: once a question asks for recency, evidence
+    of unknown date should not outrank dated evidence.
+    """
+
+    def factor(record: dict) -> float:
+        published = _published(record, field)
+        if published is None:
+            return 0.0
+        return 0.5 ** (max(0, (reference - published).days) / half_life)
+
+    return factor
+
+
+def _parse_filters(value: Any) -> dict[str, list]:
+    if value is None or value == {}:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(k, str) for k in value):
+        raise ToolInputError(
+            code="invalid_argument_value",
+            message="filters must be an object mapping field names to a value or a list of values.",
+            tool_name=TOOL_NAME,
+            details={"argument": "filters", "value": value},
+        )
+    return {
+        field: list(values) if isinstance(values, (list, tuple, set)) else [values]
+        for field, values in value.items()
+    }
+
+
+def _filter_predicate(filters: dict[str, list]):
+    """Every field must match; within a field, any listed value will do."""
+    if not filters:
+        return None
+    wanted = {field: {str(v) for v in values} for field, values in filters.items()}
+
+    def matches(record: dict) -> bool:
+        for field, allowed in wanted.items():
+            value = record.get(field)
+            if isinstance(value, (list, tuple, set)):
+                present = {str(v) for v in value}
+            else:
+                present = set() if value is None else {str(value)}
+            if not present & allowed:
+                return False
+        return True
+
+    return matches
+
+
+def _all_of(*predicates):
+    active = [p for p in predicates if p is not None]
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0]
+    return lambda record: all(p(record) for p in active)

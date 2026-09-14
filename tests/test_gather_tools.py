@@ -202,3 +202,110 @@ class TestTemporalFiltering:
             {"query": "agents", "date_from": "2025-01-01"}, context=ctx
         )
         assert [p["id"] for p in out["passages"]] == ["u2"]
+
+
+class TestRecencyAndFilters:
+    @pytest.fixture(autouse=True)
+    def ingested(self, corpus_file, ctx):
+        IngestCorpusTool().run({"path": str(corpus_file), "text_field": "content"}, context=ctx)
+
+    def test_recency_promotes_newer_passages(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "agents web", "recency_half_life_days": 30}, context=ctx
+        )
+        assert out["passages"][0]["id"] == "d4"
+
+    def test_ages_are_measured_from_the_newest_date_in_the_corpus(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "agents web", "recency_half_life_days": 30}, context=ctx
+        )
+        assert out["recency_reference_date"] == "2025-06-30"
+
+    def test_reference_date_can_be_set(self, ctx):
+        out = RetrievePassagesTool().run(
+            {
+                "query": "agents web",
+                "recency_half_life_days": 30,
+                "recency_reference_date": "2024-10-01",
+            },
+            context=ctx,
+        )
+        assert out["recency_reference_date"] == "2024-10-01"
+
+    def test_without_recency_nothing_is_recorded(self, ctx):
+        out = RetrievePassagesTool().run({"query": "agents web"}, context=ctx)
+        assert out["recency_half_life_days"] is None and out["recency_reference_date"] is None
+        assert "recency_half_life_days" not in ctx.recordsets.get(out["handle"]).args
+
+    def test_recency_is_recorded_in_provenance(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "agents web", "recency_half_life_days": 30}, context=ctx
+        )
+        args = ctx.recordsets.get(out["handle"]).args
+        assert args["recency_half_life_days"] == 30
+        assert args["recency_reference_date"] == "2025-06-30"
+
+    @pytest.mark.parametrize("value", [0, -5, "soon", True])
+    def test_invalid_half_life(self, ctx, value):
+        with pytest.raises(ToolInputError, match="recency_half_life_days"):
+            RetrievePassagesTool().run(
+                {"query": "agents", "recency_half_life_days": value}, context=ctx
+            )
+
+    def test_undated_records_sink_once_recency_is_on(self, tmp_path, ctx):
+        path = tmp_path / "undated.csv"
+        path.write_text(
+            "id,date,content\nu1,,agents web agents web\nu2,2025-02-01,agents web\n",
+            encoding="utf-8",
+        )
+        IngestCorpusTool().run({"path": str(path), "text_field": "content"}, context=ctx)
+        out = RetrievePassagesTool().run(
+            {"query": "agents web", "recency_half_life_days": 30}, context=ctx
+        )
+        assert [p["id"] for p in out["passages"]] == ["u2", "u1"]
+
+    def test_filters_match_field_values(self, ctx):
+        out = RetrievePassagesTool().run(
+            {
+                "query": "agents web model accelerators",
+                "filters": {"title": ["Browsing", "Models"]},
+            },
+            context=ctx,
+        )
+        assert out["passages"]
+        assert {p["id"] for p in out["passages"]} <= {"d3", "d4"}
+
+    def test_filters_combine_with_a_date_range(self, ctx):
+        out = RetrievePassagesTool().run(
+            {
+                "query": "agents web model accelerators",
+                "filters": {"title": ["Browsing", "Models"]},
+                "date_to": "2025-04-01",
+            },
+            context=ctx,
+        )
+        assert [p["id"] for p in out["passages"]] == ["d3"]
+
+    def test_filters_match_any_value_of_a_list_field(self, tmp_path, ctx):
+        path = tmp_path / "tagged.csv"
+        path.write_text(
+            "id,date,tags,content\n"
+            "t1,2025-01-01,\"['GPU', 'Policy']\",agents web\n"
+            "t2,2025-01-02,\"['Robotics']\",agents web\n",
+            encoding="utf-8",
+        )
+        IngestCorpusTool().run({"path": str(path), "text_field": "content"}, context=ctx)
+        out = RetrievePassagesTool().run(
+            {"query": "agents", "filters": {"tags": "GPU"}}, context=ctx
+        )
+        assert [p["id"] for p in out["passages"]] == ["t1"]
+
+    def test_filters_are_recorded_in_provenance(self, ctx):
+        out = RetrievePassagesTool().run(
+            {"query": "agents", "filters": {"title": "Browsing"}}, context=ctx
+        )
+        assert ctx.recordsets.get(out["handle"]).args["filters"] == {"title": ["Browsing"]}
+
+    def test_invalid_filters_are_tool_input_errors(self, ctx):
+        with pytest.raises(ToolInputError, match="filters"):
+            RetrievePassagesTool().run({"query": "agents", "filters": ["title"]}, context=ctx)
