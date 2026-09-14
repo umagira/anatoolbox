@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from anatoolbox.base import ToolContext
-from anatoolbox.llm_client import MODELS, call_llm_json
+from anatoolbox.llm_client import call_llm_json, model_for
 
 
 class LLMTool:
@@ -21,7 +21,7 @@ class LLMTool:
 
     Subclasses still declare their own `schema` (input_schema genuinely
     differs per tool — nothing to derive it from), set `system_prompt` and
-    `model` (see llm_client.MODELS for the tier names), and implement
+    `model` or `role` (see llm_client.configure_llm), and implement
     `_build_user_prompt`. Override `_build_result` only if the tool needs to
     reshape the LLM's parsed JSON (e.g. keeping the original args alongside
     the extracted fields) — the default returns it as-is. Do **not** embed a
@@ -31,14 +31,18 @@ class LLMTool:
     just returns `self.model` unchanged.
 
     Set `response_schema` (a JSON Schema dict) to constrain the LLM's output
-    to that exact shape via OpenAI's Structured Outputs, rather than the
+    to that exact shape via strict structured output where the endpoint
+    supports it (degrading to JSON mode, then prompt-only), rather than the
     default loose `json_object` mode where the shape is only as reliable as
     the system prompt's prose description of it — see call_llm_json for the
     strict-mode schema constraints this requires.
     """
 
     system_prompt: str = ""
-    model: str = MODELS["cheap"]
+    #: Explicit model name. None means "the model the configured role maps to".
+    model: str | None = None
+    #: Model role this tool asks for; see ``llm_client.configure_llm``.
+    role: str = "default"
     temperature: float = 0.0
     response_schema: dict[str, Any] | None = None
 
@@ -46,7 +50,7 @@ class LLMTool:
         raise NotImplementedError
 
     def _select_model(self, args: dict[str, Any]) -> str:
-        return self.model
+        return self.model or model_for(self.role)
 
     def _system_prompt_for(self, args: dict[str, Any], *, context: ToolContext) -> str:
         """Override to vary the system prompt by project/context."""

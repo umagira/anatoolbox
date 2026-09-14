@@ -3,7 +3,7 @@
 Two ideas carry the package:
 
 1. **A grammar of analytical work.** Six stages (prepare, gather, preprocess,
-   extract, analyze, enrich) and 25 task-type prefixes, each a contract with
+   extract, analyze, enrich) and 26 task-type prefixes, each a contract with
    abstract input/output and a one-sentence transformation. An agent reasons
    about *what kind of step comes next*, not which function to call.
 

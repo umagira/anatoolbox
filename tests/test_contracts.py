@@ -25,8 +25,8 @@ def test_every_stage_has_at_least_one_prefix():
 
 
 def test_expected_contract_count():
-    assert len(CONTRACTS) == 25
-    assert len(prefix_to_stage()) == 25, "a contract is missing from prefix discovery"
+    assert len(CONTRACTS) == 26
+    assert len(prefix_to_stage()) == 26, "a contract is missing from prefix discovery"
 
 
 @pytest.mark.parametrize("path", CONTRACTS, ids=lambda p: f"{p.parent.parent.name}/{p.parent.name}")

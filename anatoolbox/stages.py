@@ -32,7 +32,7 @@ STAGE_ORDER = [
 #: What each stage is for — the job a prefix must fit to belong to it.
 STAGE_DESCRIPTIONS = {
     "prepare": "Scope and plan the research before any evidence work: turn a request into a reviewable brief.",
-    "gather": "Acquire source records — ingest, retrieve, and rerank them — without rewriting their meaning.",
+    "gather": "Acquire source records — rewrite the question into queries, ingest, retrieve, and rerank — without changing what the records say.",
     "preprocess": "Prepare data for further analysis: parse, clean, normalize, deduplicate, and chunk it.",
     "extract": "Take raw data or information and extract the relevant subset in a given form: facts, entities, events, relationships.",
     "analyze": "Derive results by explicit methods: aggregates, calculations, classifications, comparisons, and scores.",

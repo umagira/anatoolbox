@@ -19,7 +19,7 @@ from typing import Any
 
 from anatoolbox.base import Tool, ToolContext
 from anatoolbox.errors import ToolInputError
-from anatoolbox.llm_client import configure_openai_key_resolver
+from anatoolbox.llm_client import configure_llm, configure_openai_key_resolver
 from anatoolbox.registry import resolve_tools
 from anatoolbox.tool_fixtures import (
     FIXTURES_DIR,
@@ -177,9 +177,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="ToolContext session_id (default: fixture)",
     )
     parser.add_argument(
+        "--llm-base-url",
+        default=None,
+        help="OpenAI-compatible endpoint, e.g. http://localhost:11434/v1 (default: environment)",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="Model name for the default role (default: ANATOOLBOX_LLM_MODEL)",
+    )
+    parser.add_argument(
         "--api-key",
         default=None,
-        help="Override OpenAI key (default: OPENAI_API_KEY_<PROJECT> from env/.env)",
+        help="API key (default: ANATOOLBOX_LLM_API_KEY, OPENAI_API_KEY_<PROJECT>, then OPENAI_API_KEY)",
     )
     return parser
 
@@ -224,25 +234,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    # Same per-project keys as the agent (OPENAI_API_KEY_MYPROJECT, …).
-    if opts.api_key:
-        configure_openai_key_resolver(lambda _project: str(opts.api_key).strip())
-    else:
-        # Per-project key if set (OPENAI_API_KEY_MYPROJECT, …), else the
-        # ordinary OPENAI_API_KEY. Hosts that need richer scoping register
-        # their own resolver before calling in.
+    # Language model: any OpenAI-compatible endpoint. Flags override the
+    # environment (ANATOOLBOX_LLM_BASE_URL / _API_KEY / _MODEL, then OPENAI_API_KEY).
+    configure_llm(base_url=opts.llm_base_url, api_key=opts.api_key, model=opts.llm_model)
+    if not opts.api_key:
+        # Honour a per-project key (OPENAI_API_KEY_<PROJECT>) when one is set;
+        # an empty result falls through to the configured or environment key.
         import os
 
-        def _resolve(project: str) -> str:
-            scoped = f"OPENAI_API_KEY_{project.strip().upper()}"
-            key = os.environ.get(scoped) or os.environ.get("OPENAI_API_KEY") or ""
-            if not key:
-                raise RuntimeError(
-                    f"No API key: set {scoped} or OPENAI_API_KEY, or pass --api-key."
-                )
-            return key
-
-        configure_openai_key_resolver(_resolve)
+        configure_openai_key_resolver(
+            lambda name: os.environ.get(f"OPENAI_API_KEY_{name.strip().upper()}", "")
+        )
 
     context, handles = build_tool_context(
         project=project,

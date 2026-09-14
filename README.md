@@ -21,7 +21,7 @@ within them a small, closed set of **task types**, each named by a prefix:
 | Stage | Task types |
 |---|---|
 | **Prepare** | `plan_` |
-| **Gather** | `ingest_` `retrieve_` `rerank_` |
+| **Gather** | `rewrite_` `ingest_` `retrieve_` `rerank_` |
 | **Preprocess** | `parse_` `clean_` `normalize_` `deduplicate_` `chunk_` |
 | **Extract** | `extract_` `detect_` `resolve_` |
 | **Analyze** | `aggregate_` `calculate_` `classify_` `compare_` `score_` |
@@ -159,7 +159,7 @@ embedding models, not basic functionality.
 
 | Area | State |
 |---|---|
-| Prefix contracts (25) | ✅ complete |
+| Prefix contracts (26) | ✅ complete |
 | Recordset memory | ✅ complete, pluggable store + policy |
 | Registry / plugin entry points | ✅ complete |
 | Local corpus backend (CSV/JSON/JSONL/Parquet) | ✅ complete |
