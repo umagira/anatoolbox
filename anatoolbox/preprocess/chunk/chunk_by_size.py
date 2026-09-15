@@ -25,9 +25,15 @@ article is about — "the platform cut processing time by 30%": which platform?
 indexed. That is deliberately the simplest form of contextual retrieval. Richer
 context — date and source, a summary of the document, or a sentence a language model
 writes for each chunk — is yours to add: write a function ``(record, chunk_text) -> str``
-and register it with ``register_contextualizer``. Each chunk keeps ``chunk_text`` (the
-window), ``context`` (what was added) and ``text`` (both, which is what gets indexed);
-token counts and spans always refer to the window.
+and register it with ``register_contextualizer``, or override ``contextualize`` in a
+subclass. Each chunk keeps ``chunk_text`` (the window), ``context`` (what was added)
+and ``text`` (both, which is what gets indexed); token counts and spans always refer
+to the window.
+
+**Other chunking methods.** Subclass ``ChunkBySizeTool``, give it a new
+``tool_name`` and override ``split`` — see ``anatoolbox.tool`` and the course
+notebook. Everything else (binding the input, metadata, context, the new corpus,
+provenance) is inherited.
 
 **Output.** A new corpus that ``retrieve_passages`` searches like any other.
 Each chunk keeps its article id (``source_id``), its position (token and
@@ -37,17 +43,15 @@ cited, dated and traced back to its article.
 
 from __future__ import annotations
 
-import json
 import re
 import statistics
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import Any
 
-from anatoolbox.base import ToolContext, ToolSchema
+from anatoolbox.base import ToolContext
 from anatoolbox.corpus import LocalCorpus, bind_corpus, local_ref, register_corpus
-from anatoolbox.errors import ToolInputError
 from anatoolbox.preprocess.chunk.base import PREFIX, STAGE
-from anatoolbox.provenance import make_provenance
+from anatoolbox.tool import BaseTool
 
 TOOL_NAME = "chunk_by_size"
 OBJECT_TYPE = "corpus"
@@ -61,6 +65,16 @@ Tokenizer = Callable[[str], list[tuple[int, int]]]
 
 _NON_SPACE = re.compile(r"\S+")
 _HF_TOKENIZERS: dict[str, Any] = {}
+#: Chunk fields that describe the window, not the record it came from.
+_CHUNK_OWN_FIELDS = (
+    "id",
+    "source_id",
+    "chunk_index",
+    "chunk_count",
+    "context",
+    "chunk_text",
+    "text",
+)
 
 #: Writes context for one chunk, from its source record and the chunk's own text.
 Contextualizer = Callable[[dict[str, Any], str], str]
@@ -89,11 +103,9 @@ def contextualizer_names() -> list[str]:
     return sorted(_CONTEXTUALIZERS)
 
 
-def _with_context(
-    contextualizer: Contextualizer | None, record: dict[str, Any], chunk_text: str
-) -> dict[str, Any]:
+def _with_context(context: str, chunk_text: str) -> dict[str, Any]:
     """``text`` is what gets indexed and shown to a model; ``chunk_text`` is the window itself."""
-    context = contextualizer(record, chunk_text).strip() if contextualizer else ""
+    context = (context or "").strip()
     return {
         "context": context or None,
         "chunk_text": chunk_text,
@@ -168,18 +180,6 @@ def chunk_text_by_size(
     return chunks
 
 
-def _int_arg(args: dict[str, Any], name: str, default: int, *, minimum: int) -> int:
-    value = args.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message=f"{name} must be an integer >= {minimum}, got {value!r}.",
-            tool_name=TOOL_NAME,
-            details={"argument": name, "value": value},
-        )
-    return value
-
-
 _INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -227,66 +227,133 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-class ChunkBySizeTool:
-    """Fixed-size chunking with optional overlap — the baseline to beat."""
+class ChunkBySizeTool(BaseTool):
+    """Fixed-size chunking with optional overlap — the baseline to beat.
 
-    prefix: ClassVar[str] = PREFIX
-    stage: ClassVar[str] = STAGE
-    tool_name: ClassVar[str] = TOOL_NAME
+    Hooks for a variant (override in a subclass with its own ``tool_name``):
 
-    schema = ToolSchema(
-        name=TOOL_NAME,
-        description=(
-            "Split every record of a corpus into chunks of a fixed number of tokens, optionally "
-            "overlapping, producing a new corpus that retrieve_passages can search. Each chunk keeps "
-            "its article id, position and the article's metadata."
-        ),
-        input_schema=_INPUT_SCHEMA,
-        render_type="json",
+    * ``split(text, settings)`` — cut one record's text into chunks.
+    * ``contextualize(record, chunk_text, settings)`` — context prepended before indexing.
+    * ``settings(args)`` — read and check arguments; add your own here.
+    * ``corpus_name(source, settings)`` — the name of the chunk corpus.
+    """
+
+    tool_name = TOOL_NAME
+    prefix = PREFIX
+    stage = STAGE
+    description = (
+        "Split every record of a corpus into chunks of a fixed number of tokens, optionally "
+        "overlapping, producing a new corpus that retrieve_passages can search. Each chunk keeps "
+        "its article id, position and the article's metadata."
     )
+    input_schema = _INPUT_SCHEMA
+
+    # --- hooks -------------------------------------------------------------
+
+    def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments that shape the chunks. Recorded in provenance."""
+        size = self.int_arg(args, "size", DEFAULT_SIZE, minimum=1)
+        overlap = self.int_arg(args, "overlap", DEFAULT_OVERLAP, minimum=0)
+        if overlap >= size:
+            raise self.input_error(
+                f"overlap must be smaller than size, got overlap={overlap}, size={size}.",
+                size=size,
+                overlap=overlap,
+            )
+        tokenizer = self.text_arg(args, "tokenizer") or WHITESPACE
+        self.load_tokenizer(tokenizer)  # fail on a bad name before any chunking
+        contextualize = self.text_arg(args, "contextualize") or NO_CONTEXT
+        if contextualize not in _CONTEXTUALIZERS:
+            raise self.input_error(
+                f"contextualize must be one of {contextualizer_names()}, got {contextualize!r}.",
+                argument="contextualize",
+                value=contextualize,
+            )
+        return {
+            "size": size,
+            "overlap": overlap,
+            "tokenizer": tokenizer,
+            "contextualize": contextualize,
+        }
+
+    def split(self, text: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+        """Cut one record's text into chunks, in order. Override to chunk differently.
+
+        Return a list of dicts, each with the chunk's ``text``. Every other key is
+        kept on the chunk — here ``tokens`` and the token and character spans. A
+        chunk without ``tokens`` is counted in whitespace words.
+        """
+        return chunk_text_by_size(
+            text,
+            size=settings["size"],
+            overlap=settings["overlap"],
+            tokenizer=self.load_tokenizer(settings["tokenizer"]),
+        )
+
+    def contextualize(
+        self, record: dict[str, Any], chunk_text: str, settings: dict[str, Any]
+    ) -> str:
+        """Context to prepend to one chunk ("" for none). Default: the registered contextualizer."""
+        contextualizer = _CONTEXTUALIZERS[settings["contextualize"]]
+        return contextualizer(record, chunk_text) if contextualizer else ""
+
+    def corpus_name(self, source: LocalCorpus, settings: dict[str, Any]) -> str:
+        """Default name of the chunk corpus, used unless the caller passes ``name``."""
+        parts = [source.name]
+        if self.tool_name != TOOL_NAME:
+            # A variant: keep its corpus apart from the baseline's, which would
+            # otherwise be silently replaced under the same name.
+            parts.append(self.tool_name.removeprefix(PREFIX))
+        if "size" in settings:
+            parts.append(f"size{settings['size']}")
+        if "overlap" in settings:
+            parts.append(f"overlap{settings['overlap']}")
+        if settings.get("contextualize", NO_CONTEXT) != NO_CONTEXT:
+            parts.append(settings["contextualize"])
+        return "_".join(parts)
+
+    def load_tokenizer(self, name: str) -> Tokenizer:
+        """``'whitespace'`` or a Hugging Face tokenizer name -> a Tokenizer."""
+        if name == WHITESPACE:
+            return whitespace_spans
+        try:
+            _load_hf_tokenizer(name)
+        except ImportError as exc:
+            raise self.input_error(
+                f"tokenizer={name!r} needs a Hugging Face tokenizer: pip install 'anatoolbox[embeddings]', "
+                "or use tokenizer='whitespace'.",
+                code="missing_dependency",
+                argument="tokenizer",
+                value=name,
+            ) from exc
+        except Exception as exc:  # unknown model name, no network, ...
+            raise self.input_error(
+                f"Could not load tokenizer {name!r}: {exc}", argument="tokenizer", value=name
+            ) from exc
+        return huggingface_spans(name)
+
+    # --- the fixed part ----------------------------------------------------
 
     def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
-        size = _int_arg(args, "size", DEFAULT_SIZE, minimum=1)
-        overlap = _int_arg(args, "overlap", DEFAULT_OVERLAP, minimum=0)
-        if overlap >= size:
-            raise ToolInputError(
-                code="invalid_argument_value",
-                message=f"overlap must be smaller than size, got overlap={overlap}, size={size}.",
-                tool_name=TOOL_NAME,
-                details={"size": size, "overlap": overlap},
-            )
-        tokenizer_name = str(args.get("tokenizer") or WHITESPACE).strip()
-        tokenizer = self._tokenizer(tokenizer_name)
-        contextualize = str(args.get("contextualize") or NO_CONTEXT).strip()
-        if contextualize not in _CONTEXTUALIZERS:
-            raise ToolInputError(
-                code="invalid_argument_value",
-                message=f"contextualize must be one of {contextualizer_names()}, got {contextualize!r}.",
-                tool_name=TOOL_NAME,
-                details={"argument": "contextualize", "value": contextualize},
-            )
-        contextualizer = _CONTEXTUALIZERS[contextualize]
-
-        source, source_ref = bind_corpus(args, context, tool_name=TOOL_NAME)
+        settings = self.settings(args)
+        source, source_ref = bind_corpus(args, context, tool_name=self.tool_name)
         source_handle = None if isinstance(args.get("input"), dict) else source_ref
-        default_name = f"{source.name}_size{size}_overlap{overlap}"
-        if contextualize != NO_CONTEXT:
-            default_name += f"_{contextualize}"
-        name = str(args.get("name") or "").strip() or default_name
+        name = self.text_arg(args, "name") or self.corpus_name(source, settings)
         if name == source.name:
-            raise ToolInputError(
-                code="invalid_argument_value",
-                message="The chunk corpus needs a different name from its source corpus.",
-                tool_name=TOOL_NAME,
-                details={"argument": "name", "value": name},
+            raise self.input_error(
+                "The chunk corpus needs a different name from its source corpus.",
+                argument="name",
+                value=name,
             )
 
         rows: list[dict[str, Any]] = []
         chunked = empty = 0
         for record in source.records:
-            pieces = chunk_text_by_size(
-                source.text_of(record), size=size, overlap=overlap, tokenizer=tokenizer
-            )
+            pieces = [
+                p
+                for p in self.split(source.text_of(record), settings)
+                if str(p.get("text") or "").strip()
+            ]
             if not pieces:
                 empty += 1
                 continue
@@ -296,32 +363,27 @@ class ChunkBySizeTool:
                 k: v for k, v in record.items() if k not in (source.text_field, source.id_field)
             }
             for index, piece in enumerate(pieces):
+                chunk_text = str(piece["text"])
                 rows.append(
                     {
                         **metadata,
+                        **{k: v for k, v in piece.items() if k not in _CHUNK_OWN_FIELDS},
+                        "tokens": piece.get("tokens", len(whitespace_spans(chunk_text))),
                         "id": f"{source_id}#{index}",
                         "source_id": source_id,
                         "chunk_index": index,
                         "chunk_count": len(pieces),
-                        **{
-                            k: piece[k]
-                            for k in (
-                                "tokens",
-                                "token_start",
-                                "token_end",
-                                "char_start",
-                                "char_end",
-                            )
-                        },
-                        **_with_context(contextualizer, record, piece["text"]),
+                        **_with_context(
+                            self.contextualize(record, chunk_text, settings), chunk_text
+                        ),
                     }
                 )
         if not rows:
-            raise ToolInputError(
+            raise self.input_error(
+                f"No record in corpus {source.name!r} has text in {source.text_field!r}.",
                 code="nothing_to_chunk",
-                message=f"No record in corpus {source.name!r} has text in {source.text_field!r}.",
-                tool_name=TOOL_NAME,
-                details={"corpus": source.name, "text_field": source.text_field},
+                corpus=source.name,
+                text_field=source.text_field,
             )
 
         chunks = register_corpus(
@@ -330,16 +392,10 @@ class ChunkBySizeTool:
                 name=name,
                 id_field="id",
                 text_field="text",
-                source=f"{TOOL_NAME}({source.name})",
+                source=f"{self.tool_name}({source.name})",
                 parse_lists=False,
             )
         )
-        settings = {
-            "size": size,
-            "overlap": overlap,
-            "tokenizer": tokenizer_name,
-            "contextualize": contextualize,
-        }
         sizes = [row["tokens"] for row in rows]
         return {
             "corpus": chunks.name,
@@ -351,37 +407,11 @@ class ChunkBySizeTool:
             "chunks": len(rows),
             "tokens": {"min": min(sizes), "median": statistics.median(sizes), "max": max(sizes)},
             "settings": settings,
-            "provenance": make_provenance(
-                TOOL_NAME,
-                settings={"source_corpus": source.name, "corpus": chunks.name, **settings},
+            "provenance": self.provenance(
+                {"source_corpus": source.name, "corpus": chunks.name, **settings},
                 derived_from=[source_ref],
             ),
         }
-
-    @staticmethod
-    def _tokenizer(name: str) -> Tokenizer:
-        if name == WHITESPACE:
-            return whitespace_spans
-        try:
-            _load_hf_tokenizer(name)
-        except ImportError as exc:
-            raise ToolInputError(
-                code="missing_dependency",
-                message=(
-                    f"tokenizer={name!r} needs a Hugging Face tokenizer: pip install 'anatoolbox[embeddings]', "
-                    "or use tokenizer='whitespace'."
-                ),
-                tool_name=TOOL_NAME,
-                details={"argument": "tokenizer", "value": name},
-            ) from exc
-        except Exception as exc:  # unknown model name, no network, ...
-            raise ToolInputError(
-                code="invalid_argument_value",
-                message=f"Could not load tokenizer {name!r}: {exc}",
-                tool_name=TOOL_NAME,
-                details={"argument": "tokenizer", "value": name},
-            ) from exc
-        return huggingface_spans(name)
 
     def _remember(self, context, chunks, source, source_handle, settings) -> str | None:
         """Chunks by reference to their registered corpus, with lineage to the source."""
@@ -389,16 +419,12 @@ class ChunkBySizeTool:
             return None
         record = context.recordsets.remember(
             object_type=OBJECT_TYPE,
-            stage=STAGE,
-            produced_by=TOOL_NAME,
+            stage=self.stage,
+            produced_by=self.tool_name,
             args={"corpus": chunks.name, "source_corpus": source.name, **settings},
             ref=local_ref(corpus=chunks.name, ids=chunks.ids),
             count=len(chunks),
-            summary=f"{len(chunks)} chunks of {settings['size']} tokens from {source.name}",
+            summary=f"{len(chunks)} chunks from {source.name} ({self.tool_name})",
             derived_from=[source_handle] if source_handle else [],
         )
         return record.handle
-
-    def execute(self, args: dict[str, Any], *, context: ToolContext) -> str:
-        data = self.run(args, context=context)
-        return json.dumps({"render": {"render_type": "json", **data}, **data})

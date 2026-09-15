@@ -33,22 +33,27 @@ What happens between retrieval and the model matters as much as either:
 
 The model comes from the ``strong`` role of ``anatoolbox.llm_client``, falling
 back to the default model; the model actually used is recorded with the answer.
+
+**Variants.** Subclass ``SynthesizeAnswerTool`` and override ``curate`` (which
+passages go into the prompt, in what order), ``system_prompt`` /
+``user_prompt`` (the instructions — constraints, step-by-step reasoning, a
+different format) or ``generate`` (how the answer is produced — for example a
+draft followed by a self-check). Citation checks and provenance are inherited.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, ClassVar
 
-from anatoolbox.base import ToolContext, ToolSchema
+from anatoolbox.base import ToolContext
 from anatoolbox.corpus import get_corpus, passages_with_text
 from anatoolbox.enrich.synthesize.base import PREFIX, STAGE
-from anatoolbox.errors import ToolInputError
 from anatoolbox.llm_client import call_llm_text, model_for
 from anatoolbox.memory import value_ref
-from anatoolbox.provenance import make_provenance, run_id_of
+from anatoolbox.provenance import run_id_of
 from anatoolbox.render import MARKDOWN_RENDER_TYPE
+from anatoolbox.tool import BaseTool
 
 TOOL_NAME = "synthesize_answer"
 OBJECT_TYPE = "answer"
@@ -235,32 +240,6 @@ def link_citations(answer: str, sources_by_label: dict[str, dict[str, Any]]) -> 
     return _CITATION_GROUP.sub(replace, answer)
 
 
-def _positive_int(args: dict[str, Any], name: str, default: int | None) -> int | None:
-    value = args.get(name, default)
-    if value is None and default is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message=f"{name} must be a positive integer, got {value!r}.",
-            tool_name=TOOL_NAME,
-            details={"argument": name, "value": value},
-        )
-    return value
-
-
-def _choice(args: dict[str, Any], name: str, default: str, allowed: tuple[str, ...]) -> str:
-    value = str(args.get(name) or default).strip()
-    if value not in allowed:
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message=f"{name} must be one of {list(allowed)}, got {value!r}.",
-            tool_name=TOOL_NAME,
-            details={"argument": name, "value": value},
-        )
-    return value
-
-
 _INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -316,66 +295,103 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-class SynthesizeAnswerTool:
-    """Answer a question from retrieved passages, citing numbered sources."""
+class SynthesizeAnswerTool(BaseTool):
+    """Answer a question from retrieved passages, citing numbered sources.
 
-    prefix: ClassVar[str] = PREFIX
-    stage: ClassVar[str] = STAGE
-    tool_name: ClassVar[str] = TOOL_NAME
+    Hooks for a variant (override in a subclass with its own ``tool_name``):
+
+    * ``curate(passages, settings)`` — choose, label and order the sources for the prompt.
+    * ``system_prompt(settings)`` / ``user_prompt(question, sources, settings)`` — the instructions.
+    * ``generate(system, user, settings, context)`` — produce the answer text.
+    * ``settings(args)`` — read and check arguments; add your own here.
+    """
+
+    tool_name = TOOL_NAME
+    prefix = PREFIX
+    stage = STAGE
+    description = (
+        "Write an answer to a question from retrieved passages, citing numbered sources "
+        "[S1]…[Sn]. Binds the most recent passages (retrieved or reranked) unless given a "
+        "handle, and reports citations to unknown labels and sources left uncited."
+    )
+    input_schema = _INPUT_SCHEMA
+    render_type = MARKDOWN_RENDER_TYPE
+    #: Model role used when no ``model`` is passed; see ``llm_client.configure_llm``.
     role: ClassVar[str] = "strong"
 
-    schema = ToolSchema(
-        name=TOOL_NAME,
-        description=(
-            "Write an answer to a question from retrieved passages, citing numbered sources "
-            "[S1]…[Sn]. Binds the most recent passages (retrieved or reranked) unless given a "
-            "handle, and reports citations to unknown labels and sources left uncited."
-        ),
-        input_schema=_INPUT_SCHEMA,
-        render_type=MARKDOWN_RENDER_TYPE,
-    )
+    # --- hooks -------------------------------------------------------------
 
-    def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
-        question = str(args.get("question") or "").strip()
-        if not question:
-            raise ToolInputError(
-                code="missing_required_arguments",
-                message="Argument 'question' is required.",
-                tool_name=TOOL_NAME,
-                details={"missing": ["question"]},
-            )
-        mode = _choice(args, "mode", DEFAULT_MODE, MODES)
-        order = _choice(args, "order", DEFAULT_ORDER, ORDERS)
-        max_passages = _positive_int(args, "max_passages", DEFAULT_MAX_PASSAGES)
-        max_chars = _positive_int(args, "max_chars_per_passage", DEFAULT_MAX_CHARS)
-        max_tokens = _positive_int(args, "max_tokens", None)
-        max_per_source = _positive_int(args, "max_per_source", None)
-        instructions = str(args.get("instructions") or "").strip() or None
+    def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments. Recorded in provenance, including the model actually used."""
+        return {
+            "question": self.text_arg(args, "question", required=True),
+            "mode": self.choice_arg(args, "mode", DEFAULT_MODE, MODES),
+            "order": self.choice_arg(args, "order", DEFAULT_ORDER, ORDERS),
+            "max_passages": self.int_arg(args, "max_passages", DEFAULT_MAX_PASSAGES),
+            "max_chars_per_passage": self.int_arg(args, "max_chars_per_passage", DEFAULT_MAX_CHARS),
+            "max_per_source": self.int_arg(args, "max_per_source", None),
+            "max_tokens": self.int_arg(args, "max_tokens", None),
+            "instructions": self.text_arg(args, "instructions") or None,
+            "model": self.text_arg(args, "model") or model_for(self.role),
+        }
 
-        passages, input_handle, upstream_ref = self._passages(args, context=context)
-        sources, duplicates, over_limit = curate(
+    def curate(
+        self, passages: list[dict[str, Any]], settings: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Sources for the prompt, in prompt order, each with ``label``, ``rank``, ``position``.
+
+        ``passages`` arrive in relevance order with full ``text``. Returns
+        ``(sources, duplicates_dropped, dropped_over_source_limit)``. Labels must
+        stay ``S1``…``Sn`` for the citation checks to work.
+        """
+        return curate(
             passages,
-            max_passages=max_passages,
-            max_chars=max_chars,
-            order=order,
-            max_per_source=max_per_source,
+            max_passages=settings["max_passages"],
+            max_chars=settings["max_chars_per_passage"],
+            order=settings["order"],
+            max_per_source=settings["max_per_source"],
         )
-        if not sources:
-            raise ToolInputError(
-                code="no_candidates",
-                message="There are no passages with text to answer from.",
-                tool_name=TOOL_NAME,
-                details={"input_handle": input_handle},
-            )
 
-        model = str(args.get("model") or "").strip() or model_for(self.role)
-        answer = call_llm_text(
-            SYSTEM_PROMPT.format(grounding=GROUNDING[mode]),
-            build_user_prompt(question, sources, instructions=instructions),
-            model=model,
+    def system_prompt(self, settings: dict[str, Any]) -> str:
+        return SYSTEM_PROMPT.format(grounding=GROUNDING[settings["mode"]])
+
+    def user_prompt(
+        self, question: str, sources: list[dict[str, Any]], settings: dict[str, Any]
+    ) -> str:
+        return build_user_prompt(question, sources, instructions=settings["instructions"])
+
+    def generate(
+        self, system: str, user: str, settings: dict[str, Any], context: ToolContext
+    ) -> str:
+        """The answer text, citing sources as [S1]. Default: one LLM call."""
+        return call_llm_text(
+            system,
+            user,
+            model=settings["model"],
             temperature=0.0,
             project=context.project,
-            max_tokens=max_tokens,
+            max_tokens=settings["max_tokens"],
+        )
+
+    # --- the fixed part ----------------------------------------------------
+
+    def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
+        settings = self.settings(args)
+        question = settings["question"]
+        passages, input_handle, upstream_ref = self._passages(args, context=context)
+        sources, duplicates, over_limit = self.curate(passages, settings)
+        if not sources:
+            raise self.input_error(
+                "There are no passages with text to answer from.",
+                code="no_candidates",
+                input_handle=input_handle,
+            )
+
+        answer = self.generate(
+            self.system_prompt(settings),
+            self.user_prompt(question, sources, settings),
+            settings,
+            context,
         ).strip()
 
         by_label = {source["label"]: source for source in sources}
@@ -383,10 +399,10 @@ class SynthesizeAnswerTool:
         by_rank = sorted(sources, key=lambda source: source["rank"])
         result = {
             "question": question,
-            "max_per_source": max_per_source,
-            "mode": mode,
-            "order": order,
-            "model": model,
+            "max_per_source": settings["max_per_source"],
+            "mode": settings["mode"],
+            "order": settings["order"],
+            "model": settings["model"],
             "answer": answer,
             "answer_markdown": link_citations(answer, by_label),
             "sources": [
@@ -407,23 +423,18 @@ class SynthesizeAnswerTool:
             **citation_coverage(answer),
             "input_handle": input_handle,
         }
-        result["handle"] = self._remember(context, result, max_passages=max_passages)
-        result["provenance"] = make_provenance(
-            TOOL_NAME,
-            settings={
-                "question": question,
-                "mode": mode,
-                "order": order,
-                "model": model,
-                "max_passages": max_passages,
-                "max_chars_per_passage": max_chars,
-                "max_per_source": max_per_source,
-                "max_tokens": max_tokens,
-                "instructions": instructions,
-            },
-            derived_from=[upstream_ref],
-        )
+        result["handle"] = self._remember(context, result, max_passages=settings["max_passages"])
+        result["provenance"] = self.provenance(settings, derived_from=[upstream_ref])
         return result
+
+    def render(self, data: dict[str, Any]) -> dict[str, Any]:
+        lines = []
+        for source in data["sources"]:
+            meta = " · ".join(str(source[f]) for f in ("title", "date") if source.get(f))
+            url = f" — {source['url']}" if source.get("url") else ""
+            lines.append(f"- **[{source['label']}]** {meta}{url}")
+        content = data["answer_markdown"] + "\n\n**Sources**\n\n" + "\n".join(lines)
+        return {"render_type": MARKDOWN_RENDER_TYPE, "content": content}
 
     def _passages(self, args: dict[str, Any], *, context: ToolContext):
         """Where the passages come from, in precedence order.
@@ -444,32 +455,31 @@ class SynthesizeAnswerTool:
             if explicit is None:
                 explicit = given.get("passages")
             if explicit is None:
-                raise ToolInputError(
-                    code="invalid_argument_value",
-                    message=(
-                        "`input` must be a passages handle or a result with 'passages', "
-                        "such as the result of retrieve_passages or rerank_passages."
-                    ),
-                    tool_name=TOOL_NAME,
-                    details={"argument": "input"},
+                raise self.input_error(
+                    "`input` must be a passages handle or a result with 'passages', "
+                    "such as the result of retrieve_passages or rerank_passages.",
+                    argument="input",
                 )
             upstream = run_id_of(given)
         if explicit is not None:
             given_corpus = given.get("corpus") if isinstance(given, dict) else ""
             corpus_hint = str(args.get("corpus") or given_corpus or "").strip() or None
-            return passages_with_text(explicit, corpus_hint, tool_name=TOOL_NAME), None, upstream
+            return (
+                passages_with_text(explicit, corpus_hint, tool_name=self.tool_name),
+                None,
+                upstream,
+            )
 
         if context.recordsets is None:
-            raise ToolInputError(
+            raise self.input_error(
+                "No passages: pass passages=[...], or run retrieve_passages first.",
                 code="missing_required_arguments",
-                message="No passages: pass passages=[...], or run retrieve_passages first.",
-                tool_name=TOOL_NAME,
-                details={"missing": ["passages"]},
+                missing=["passages"],
             )
         requested = args.get("input")
         record = context.recordsets.bind(
             object_type=PASSAGES_OBJECT_TYPE,
-            tool_name=TOOL_NAME,
+            tool_name=self.tool_name,
             requested=requested.strip()
             if isinstance(requested, str) and requested.strip()
             else None,
@@ -478,11 +488,11 @@ class SynthesizeAnswerTool:
         try:
             corpus = get_corpus(corpus_name)
         except KeyError as exc:
-            raise ToolInputError(
+            raise self.input_error(
+                str(exc.args[0]) if exc.args else f"No corpus named {corpus_name!r}.",
                 code="unknown_corpus",
-                message=str(exc.args[0]) if exc.args else f"No corpus named {corpus_name!r}.",
-                tool_name=TOOL_NAME,
-                details={"corpus": corpus_name, "input_handle": record.handle},
+                corpus=corpus_name,
+                input_handle=record.handle,
             ) from exc
         passages = []
         for row in corpus.get(record.ref.get("ids") or []):
@@ -507,8 +517,8 @@ class SynthesizeAnswerTool:
             return None
         record = context.recordsets.remember(
             object_type=OBJECT_TYPE,
-            stage=STAGE,
-            produced_by=TOOL_NAME,
+            stage=self.stage,
+            produced_by=self.tool_name,
             args={
                 "question": result["question"],
                 "mode": result["mode"],
@@ -538,15 +548,3 @@ class SynthesizeAnswerTool:
             derived_from=[result["input_handle"]] if result["input_handle"] else [],
         )
         return record.handle
-
-    def execute(self, args: dict[str, Any], *, context: ToolContext) -> str:
-        data = self.run(args, context=context)
-        lines = []
-        for source in data["sources"]:
-            meta = " · ".join(str(source[f]) for f in ("title", "date") if source.get(f))
-            url = f" — {source['url']}" if source.get("url") else ""
-            lines.append(f"- **[{source['label']}]** {meta}{url}")
-        content = data["answer_markdown"] + "\n\n**Sources**\n\n" + "\n".join(lines)
-        return json.dumps(
-            {"render": {"render_type": MARKDOWN_RENDER_TYPE, "content": content}, **data}
-        )

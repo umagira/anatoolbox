@@ -16,27 +16,38 @@ reason to rerank chunks rather than whole articles.
 
 Every result reports its ``retrieval_rank`` and ``rank_change``, so the effect
 of reranking is visible rather than assumed. The default reranker is a small
-cross-encoder; plug in any other with ``anatoolbox.reranking.configure_reranker``.
+cross-encoder; plug in any other with ``anatoolbox.reranking.configure_reranker``,
+or subclass ``RerankPassagesTool`` and override ``score`` (for example, to let a
+language model judge relevance).
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any, ClassVar
+from typing import Any
 
-from anatoolbox.base import ToolContext, ToolSchema
+from anatoolbox.base import ToolContext
 from anatoolbox.corpus import get_corpus, local_ref, passages_with_text
-from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.rerank.base import PREFIX, STAGE
 from anatoolbox.memory import value_ref
-from anatoolbox.provenance import make_provenance, run_id_of
+from anatoolbox.provenance import run_id_of
 from anatoolbox.reranking import rerank_texts, reranker_label
+from anatoolbox.tool import BaseTool
 
 TOOL_NAME = "rerank_passages"
 OBJECT_TYPE = "passages"
 DEFAULT_KEEP = 5
 DEFAULT_MAX_CHARS = 4000
 SNIPPET_CHARS = 400
+#: Fields of an upstream passage that describe its old ranking, not the passage.
+_RANKING_FIELDS = (
+    "text",
+    "snippet",
+    "rank",
+    "score",
+    "rerank_score",
+    "retrieval_rank",
+    "rank_change",
+)
 
 _INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -81,63 +92,79 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-def _positive_int(args: dict[str, Any], name: str, default: int) -> int:
-    value = args.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message=f"{name} must be a positive integer, got {value!r}.",
-            tool_name=TOOL_NAME,
-            details={"argument": name, "value": value},
-        )
-    return value
+class RerankPassagesTool(BaseTool):
+    """Re-order retrieved passages by a reranker's judgment of their full text.
 
+    Hooks for a variant (override in a subclass with its own ``tool_name``):
 
-class RerankPassagesTool:
-    """Re-order retrieved passages by a reranker's judgment of their full text."""
+    * ``score(query, texts, settings)`` — one relevance score per candidate text.
+    * ``reranker(settings)`` — the label recorded for the scoring method.
+    * ``settings(args)`` — read and check arguments; add your own here.
+    """
 
-    prefix: ClassVar[str] = PREFIX
-    stage: ClassVar[str] = STAGE
-    tool_name: ClassVar[str] = TOOL_NAME
-
-    schema = ToolSchema(
-        name=TOOL_NAME,
-        description=(
-            "Rerank previously retrieved passages: re-score each candidate's full text "
-            "against the query with a reranking model and keep the best. Retrieve a "
-            "generous set first (e.g. size=30), then rerank to keep=5."
-        ),
-        input_schema=_INPUT_SCHEMA,
-        render_type="table",
+    tool_name = TOOL_NAME
+    prefix = PREFIX
+    stage = STAGE
+    description = (
+        "Rerank previously retrieved passages: re-score each candidate's full text "
+        "against the query with a reranking model and keep the best. Retrieve a "
+        "generous set first (e.g. size=30), then rerank to keep=5."
     )
+    input_schema = _INPUT_SCHEMA
+    render_type = "table"
+
+    # --- hooks -------------------------------------------------------------
+
+    def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments. ``query`` may be empty: the candidates' own query is used then."""
+        return {
+            "query": self.text_arg(args, "query"),
+            "keep": self.int_arg(args, "keep", DEFAULT_KEEP),
+            "max_per_source": self.int_arg(args, "max_per_source", None),
+            "max_chars": self.int_arg(args, "max_chars", DEFAULT_MAX_CHARS),
+        }
+
+    def score(self, query: str, texts: list[str], settings: dict[str, Any]) -> list[float]:
+        """One score per text, higher is more relevant. Default: the configured reranker.
+
+        ``texts`` are already cut to ``max_chars``.
+        """
+        return rerank_texts(query, texts)
+
+    def reranker(self, settings: dict[str, Any]) -> str:
+        """A label for the scoring method, recorded with every result."""
+        return reranker_label()
+
+    # --- the fixed part ----------------------------------------------------
 
     def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
-        keep = _positive_int(args, "keep", DEFAULT_KEEP)
-        max_chars = _positive_int(args, "max_chars", DEFAULT_MAX_CHARS)
-        max_per_source = (
-            None if args.get("max_per_source") is None else _positive_int(args, "max_per_source", 1)
-        )
+        settings = self.settings(args)
+        keep, max_per_source = settings["keep"], settings["max_per_source"]
         candidates, corpus_name, candidate_handle, candidate_query, upstream_ref = self._candidates(
             args, context=context
         )
-
-        query = str(args.get("query") or candidate_query or "").strip()
+        query = settings["query"] or str(candidate_query or "").strip()
         if not query:
-            raise ToolInputError(
+            raise self.input_error(
+                "No query to rerank for: pass `query`, or rerank passages that were retrieved with one.",
                 code="missing_required_arguments",
-                message="No query to rerank for: pass `query`, or rerank passages that were retrieved with one.",
-                tool_name=TOOL_NAME,
-                details={"missing": ["query"]},
+                missing=["query"],
             )
         if not candidates:
-            raise ToolInputError(
+            raise self.input_error(
+                "There are no candidate passages to rerank; retrieval returned nothing.",
                 code="no_candidates",
-                message="There are no candidate passages to rerank; retrieval returned nothing.",
-                tool_name=TOOL_NAME,
-                details={"input_handle": candidate_handle},
+                input_handle=candidate_handle,
             )
+        settings["query"] = query
 
-        scores = rerank_texts(query, [text[:max_chars] for _, text, _ in candidates])
+        scores = self.score(
+            query, [text[: settings["max_chars"]] for _, text, _ in candidates], settings
+        )
+        if len(scores) != len(candidates):
+            raise ValueError(
+                f"{type(self).__name__}.score returned {len(scores)} scores for {len(candidates)} texts."
+            )
         order: list[int] = []
         per_source: dict[str, int] = {}
         skipped = 0
@@ -158,14 +185,14 @@ class RerankPassagesTool:
                     **metadata,
                     "id": passage_id,
                     "rank": new_rank,
-                    "rerank_score": round(scores[i], 6),
+                    "rerank_score": round(float(scores[i]), 6),
                     "retrieval_rank": i + 1,
                     "rank_change": (i + 1) - new_rank,
                     "snippet": text[:SNIPPET_CHARS],
                 }
             )
 
-        label = reranker_label()
+        label = self.reranker(settings)
         result = {
             "query": query,
             "reranker": label,
@@ -176,25 +203,30 @@ class RerankPassagesTool:
             "passages": passages,
             "input_handle": candidate_handle,
         }
-        settings = {
-            "query": query,
-            "keep": keep,
-            "max_per_source": max_per_source,
-            "max_chars": max_chars,
-            "reranker": label,
-            "candidates": len(candidates),
-        }
+        recorded = {**settings, "reranker": label, "candidates": len(candidates)}
         result["handle"] = self._remember(
             context,
             passages=passages,
             corpus_name=corpus_name,
             candidate_handle=candidate_handle,
-            settings=settings,
+            settings=recorded,
         )
-        result["provenance"] = make_provenance(
-            TOOL_NAME, settings={**settings, "corpus": corpus_name}, derived_from=[upstream_ref]
+        result["provenance"] = self.provenance(
+            {**recorded, "corpus": corpus_name}, derived_from=[upstream_ref]
         )
         return result
+
+    def render(self, data: dict[str, Any]) -> dict[str, Any]:
+        columns = ["rank", "rerank_score", "retrieval_rank", "id", "snippet"]
+        return {
+            "render_type": "table",
+            "columns": columns,
+            "rows": [{k: p.get(k) for k in columns} for p in data["passages"]],
+            "caption": (
+                f"top {data['returned']} of {data['candidates']} candidates for "
+                f"{data['query']!r}, reranked by {data['reranker']}"
+            ),
+        }
 
     def _candidates(self, args: dict[str, Any], *, context: ToolContext):
         """Where the candidates come from, in precedence order.
@@ -217,33 +249,20 @@ class RerankPassagesTool:
             if explicit is None:
                 explicit = given.get("passages")
             if explicit is None:
-                raise ToolInputError(
-                    code="invalid_argument_value",
-                    message=(
-                        "`input` must be a passages handle or a result with 'passages', "
-                        "such as the result of retrieve_passages."
-                    ),
-                    tool_name=TOOL_NAME,
-                    details={"argument": "input"},
+                raise self.input_error(
+                    "`input` must be a passages handle or a result with 'passages', "
+                    "such as the result of retrieve_passages.",
+                    argument="input",
                 )
             query_hint = given.get("query")
             upstream = run_id_of(given)
         if explicit is not None:
             given_corpus = given.get("corpus") if isinstance(given, dict) else ""
             corpus_hint = str(args.get("corpus") or given_corpus or "").strip() or None
-            passages = passages_with_text(explicit, corpus_hint, tool_name=TOOL_NAME)
-            dropped = (
-                "text",
-                "snippet",
-                "rank",
-                "score",
-                "rerank_score",
-                "retrieval_rank",
-                "rank_change",
-            )
+            passages = passages_with_text(explicit, corpus_hint, tool_name=self.tool_name)
             return (
                 [
-                    (p["id"], p["text"], {k: v for k, v in p.items() if k not in dropped})
+                    (p["id"], p["text"], {k: v for k, v in p.items() if k not in _RANKING_FIELDS})
                     for p in passages
                 ],
                 corpus_hint,
@@ -253,16 +272,15 @@ class RerankPassagesTool:
             )
 
         if context.recordsets is None:
-            raise ToolInputError(
+            raise self.input_error(
+                "No candidates: pass passages=[...], or run retrieve_passages first.",
                 code="missing_required_arguments",
-                message="No candidates: pass passages=[...], or run retrieve_passages first.",
-                tool_name=TOOL_NAME,
-                details={"missing": ["passages"]},
+                missing=["passages"],
             )
         requested = args.get("input")
         record = context.recordsets.bind(
             object_type=OBJECT_TYPE,
-            tool_name=TOOL_NAME,
+            tool_name=self.tool_name,
             requested=requested.strip()
             if isinstance(requested, str) and requested.strip()
             else None,
@@ -271,11 +289,11 @@ class RerankPassagesTool:
         try:
             corpus = get_corpus(corpus_name)
         except KeyError as exc:
-            raise ToolInputError(
+            raise self.input_error(
+                str(exc.args[0]) if exc.args else f"No corpus named {corpus_name!r}.",
                 code="unknown_corpus",
-                message=str(exc.args[0]) if exc.args else f"No corpus named {corpus_name!r}.",
-                tool_name=TOOL_NAME,
-                details={"corpus": corpus_name, "input_handle": record.handle},
+                corpus=corpus_name,
+                input_handle=record.handle,
             ) from exc
         candidates = [
             (
@@ -295,8 +313,8 @@ class RerankPassagesTool:
         ids = [p["id"] for p in passages]
         record = context.recordsets.remember(
             object_type=OBJECT_TYPE,
-            stage=STAGE,
-            produced_by=TOOL_NAME,
+            stage=self.stage,
+            produced_by=self.tool_name,
             args=settings,
             # Candidates from a corpus stay by reference; explicit ones exist nowhere else.
             ref=local_ref(corpus=corpus_name, ids=ids) if corpus_name else value_ref(passages),
@@ -308,17 +326,3 @@ class RerankPassagesTool:
             derived_from=[candidate_handle] if candidate_handle else [],
         )
         return record.handle
-
-    def execute(self, args: dict[str, Any], *, context: ToolContext) -> str:
-        data = self.run(args, context=context)
-        columns = ["rank", "rerank_score", "retrieval_rank", "id", "snippet"]
-        render = {
-            "render_type": "table",
-            "columns": columns,
-            "rows": [{k: p.get(k) for k in columns} for p in data["passages"]],
-            "caption": (
-                f"top {data['returned']} of {data['candidates']} candidates for "
-                f"{data['query']!r}, reranked by {data['reranker']}"
-            ),
-        }
-        return json.dumps({"render": render, **data})

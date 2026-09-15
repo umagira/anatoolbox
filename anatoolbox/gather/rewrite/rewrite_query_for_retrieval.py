@@ -21,21 +21,24 @@ so a range is only kept when the question itself mentions a period.
 The model comes from the ``fast`` role of ``anatoolbox.llm_client``, falling back
 to the default model. If the model returns no usable query, the original
 question is used and ``fallback`` says so.
+
+**Variants.** Subclass ``RewriteQueryForRetrievalTool`` and override
+``system_prompt`` / ``user_prompt`` to change the instructions, ``rewrite`` to
+produce queries another way (for example a hypothetical answer to embed
+instead of the question), or ``clean`` to post-process the reply.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import date
 from typing import Any, ClassVar
 
-from anatoolbox.base import ToolContext, ToolSchema
-from anatoolbox.errors import ToolInputError
+from anatoolbox.base import ToolContext
 from anatoolbox.gather.rewrite.base import PREFIX, STAGE
 from anatoolbox.llm_client import call_llm_json, model_for
 from anatoolbox.memory import value_ref
-from anatoolbox.provenance import make_provenance
+from anatoolbox.tool import BaseTool
 
 TOOL_NAME = "rewrite_query_for_retrieval"
 OBJECT_TYPE = "queries"
@@ -201,91 +204,97 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-class RewriteQueryForRetrievalTool:
-    """Rewrite a question into queries for retrieval: expand, decompose, or clarify."""
+class RewriteQueryForRetrievalTool(BaseTool):
+    """Rewrite a question into queries for retrieval: expand, decompose, or clarify.
 
-    prefix: ClassVar[str] = PREFIX
-    stage: ClassVar[str] = STAGE
-    tool_name: ClassVar[str] = TOOL_NAME
-    role: ClassVar[str] = "fast"
+    Hooks for a variant (override in a subclass with its own ``tool_name``):
 
-    schema = ToolSchema(
-        name=TOOL_NAME,
-        description=(
-            "Rewrite a question into retrieval queries before searching: expand a broad question "
-            "into variants, decompose a compound one into parts, or clarify a vague one. Returns "
-            "queries for retrieve_passages(queries=...), exact terms, and any time range the "
-            "question names. Never answers the question."
-        ),
-        input_schema=_INPUT_SCHEMA,
-        render_type="json",
+    * ``system_prompt(settings)`` / ``user_prompt(settings)`` — the instructions.
+    * ``rewrite(settings, context)`` — produce the raw reply (default: one JSON LLM call).
+    * ``clean(reply, settings)`` — turn the reply into queries, exact terms and a time range.
+    * ``settings(args)`` — read and check arguments; add your own here.
+    """
+
+    tool_name = TOOL_NAME
+    prefix = PREFIX
+    stage = STAGE
+    description = (
+        "Rewrite a question into retrieval queries before searching: expand a broad question "
+        "into variants, decompose a compound one into parts, or clarify a vague one. Returns "
+        "queries for retrieve_passages(queries=...), exact terms, and any time range the "
+        "question names. Never answers the question."
     )
+    input_schema = _INPUT_SCHEMA
+    #: Model role used when no ``model`` is passed; see ``llm_client.configure_llm``.
+    role: ClassVar[str] = "fast"
+    #: Strategies ``settings`` accepts. A subclass adding one extends this and the prompt.
+    strategies: ClassVar[tuple[str, ...]] = STRATEGIES
 
-    def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
-        question = str(args.get("question") or "").strip()
-        if not question:
-            raise ToolInputError(
-                code="missing_required_arguments",
-                message="Argument 'question' is required.",
-                tool_name=TOOL_NAME,
-                details={"missing": ["question"]},
-            )
-        strategy = str(args.get("strategy") or DEFAULT_STRATEGY).strip()
-        if strategy not in STRATEGIES:
-            raise ToolInputError(
-                code="invalid_argument_value",
-                message=f"strategy must be one of {list(STRATEGIES)}, got {strategy!r}.",
-                tool_name=TOOL_NAME,
-                details={"argument": "strategy", "value": strategy},
-            )
+    # --- hooks -------------------------------------------------------------
+
+    def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments. Recorded in provenance, including the model actually used."""
+        question = self.text_arg(args, "question", required=True)
+        strategy = self.choice_arg(args, "strategy", DEFAULT_STRATEGY, self.strategies)
         max_queries = args.get("max_queries", DEFAULT_MAX_QUERIES)
         if (
             isinstance(max_queries, bool)
             or not isinstance(max_queries, int)
             or not 1 <= max_queries <= MAX_QUERIES_LIMIT
         ):
-            raise ToolInputError(
-                code="invalid_argument_value",
-                message=f"max_queries must be an integer from 1 to {MAX_QUERIES_LIMIT}, got {max_queries!r}.",
-                tool_name=TOOL_NAME,
-                details={"argument": "max_queries", "value": max_queries},
+            raise self.input_error(
+                f"max_queries must be an integer from 1 to {MAX_QUERIES_LIMIT}, got {max_queries!r}.",
+                argument="max_queries",
+                value=max_queries,
             )
-        if strategy == "clarify":
-            max_queries = 1
-        collection = str(args.get("collection") or "").strip()
+        return {
+            "question": question,
+            "strategy": strategy,
+            "max_queries": 1 if strategy == "clarify" else max_queries,
+            "collection": self.text_arg(args, "collection") or None,
+            "model": self.text_arg(args, "model") or model_for(self.role),
+        }
 
-        model = str(args.get("model") or "").strip() or model_for(self.role)
-        system = SYSTEM_PROMPT.format(
-            strategy=STRATEGY_INSTRUCTIONS[strategy].format(n=max_queries),
+    def system_prompt(self, settings: dict[str, Any]) -> str:
+        collection = settings["collection"]
+        return SYSTEM_PROMPT.format(
+            strategy=STRATEGY_INSTRUCTIONS[settings["strategy"]].format(n=settings["max_queries"]),
             collection=f"\n- The collection covers: {collection}" if collection else "",
         )
-        reply = call_llm_json(
-            system,
-            f"Question: {question}",
-            model=model,
+
+    def user_prompt(self, settings: dict[str, Any]) -> str:
+        return f"Question: {settings['question']}"
+
+    def rewrite(self, settings: dict[str, Any], context: ToolContext) -> Any:
+        """The raw reply: a dict with ``queries`` (strings or {query, purpose}), and
+        optionally ``exact_terms`` and ``time_range``. Default: one JSON LLM call."""
+        return call_llm_json(
+            self.system_prompt(settings),
+            self.user_prompt(settings),
+            model=settings["model"],
             temperature=0.0,
             response_schema=RESPONSE_SCHEMA,
             project=context.project,
         )
-        cleaned = clean_reply(reply, question, max_queries)
+
+    def clean(self, reply: Any, settings: dict[str, Any]) -> dict[str, Any]:
+        """Validated ``queries``, ``exact_terms``, ``time_range`` and ``fallback``."""
+        return clean_reply(reply, settings["question"], settings["max_queries"])
+
+    # --- the fixed part ----------------------------------------------------
+
+    def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
+        settings = self.settings(args)
+        cleaned = self.clean(self.rewrite(settings, context), settings)
         result = {
-            "question": question,
-            "strategy": strategy,
+            "question": settings["question"],
+            "strategy": settings["strategy"],
             **cleaned,
             "query_texts": [q["query"] for q in cleaned["queries"]],
-            "model": model,
+            "model": settings["model"],
         }
-        result["handle"] = self._remember(context, result, max_queries=max_queries)
-        result["provenance"] = make_provenance(
-            TOOL_NAME,
-            settings={
-                "question": question,
-                "strategy": strategy,
-                "max_queries": max_queries,
-                "collection": collection or None,
-                "model": model,
-            },
-        )
+        result["handle"] = self._remember(context, result, max_queries=settings["max_queries"])
+        result["provenance"] = self.provenance(settings)
         return result
 
     def _remember(
@@ -295,8 +304,8 @@ class RewriteQueryForRetrievalTool:
             return None
         record = context.recordsets.remember(
             object_type=OBJECT_TYPE,
-            stage=STAGE,
-            produced_by=TOOL_NAME,
+            stage=self.stage,
+            produced_by=self.tool_name,
             args={
                 "question": result["question"],
                 "strategy": result["strategy"],
@@ -309,7 +318,3 @@ class RewriteQueryForRetrievalTool:
             derived_from=[],
         )
         return record.handle
-
-    def execute(self, args: dict[str, Any], *, context: ToolContext) -> str:
-        data = self.run(args, context=context)
-        return json.dumps({"render": {"render_type": "json", **data}, **data})

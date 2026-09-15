@@ -27,20 +27,32 @@ In a pipeline, pass results rather than handles: ``input`` may be the result of
 ``chunk_by_size`` or ``ingest_corpus``, and ``queries_input`` the
 result of ``rewrite_query_for_retrieval``. Their run ids go into this result's
 provenance.
+
+**Other retrieval methods.** Subclass ``RetrievePassagesTool`` with a new
+``tool_name`` and override a hook: ``rank`` (how one query ranks the corpus —
+a different scoring function, another index, a weighted fusion), ``keep``
+(which records may be returned), ``boost`` (a score multiplier per record) or
+``fuse`` (how the rankings of several queries combine).
 """
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from typing import Any, ClassVar
 
-from anatoolbox.base import ToolContext, ToolSchema
-from anatoolbox.corpus import bind_corpus, ensure_bm25, ensure_embeddings, get_embedder, local_ref
-from anatoolbox.errors import ToolInputError
+from anatoolbox.base import ToolContext
+from anatoolbox.corpus import (
+    LocalCorpus,
+    bind_corpus,
+    ensure_bm25,
+    ensure_embeddings,
+    get_embedder,
+    local_ref,
+)
 from anatoolbox.gather.retrieve.base import PREFIX, STAGE
-from anatoolbox.provenance import make_provenance, run_id_of
-from anatoolbox.retrieval import STRATEGIES, rank_records, reciprocal_rank_fusion
+from anatoolbox.provenance import run_id_of
+from anatoolbox.retrieval import STRATEGIES, Hit, rank_records, reciprocal_rank_fusion
+from anatoolbox.tool import BaseTool
 
 TOOL_NAME = "retrieve_passages"
 OBJECT_TYPE = "passages"
@@ -130,117 +142,149 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-class RetrievePassagesTool:
-    """Rank a local corpus with BM25, embeddings, or a fusion of both."""
+class RetrievePassagesTool(BaseTool):
+    """Rank a local corpus with BM25, embeddings, or a fusion of both.
 
-    prefix: ClassVar[str] = PREFIX
-    stage: ClassVar[str] = STAGE
-    tool_name: ClassVar[str] = TOOL_NAME
+    Hooks for a variant (override in a subclass with its own ``tool_name``):
 
-    schema = ToolSchema(
-        name=TOOL_NAME,
-        description=(
-            "Search a local corpus and return the best-matching passages. "
-            "strategy=sparse|dense|hybrid selects BM25, embeddings, or rank fusion."
-        ),
-        input_schema=_INPUT_SCHEMA,
-        render_type="table",
+    * ``rank(query, corpus, settings, limit)`` — rank the corpus for one query.
+    * ``keep(record, settings)`` — whether a record may be returned.
+    * ``boost(record, settings)`` — a score multiplier per record.
+    * ``fuse(rankings, settings)`` — combine the rankings of several queries.
+    * ``settings(args)`` — read and check arguments; add your own here.
+    """
+
+    tool_name = TOOL_NAME
+    prefix = PREFIX
+    stage = STAGE
+    description = (
+        "Search a local corpus and return the best-matching passages. "
+        "strategy=sparse|dense|hybrid selects BM25, embeddings, or rank fusion."
     )
+    input_schema = _INPUT_SCHEMA
+    render_type = "table"
+    #: Strategies ``settings`` accepts. A subclass adding one extends this and ``rank``.
+    strategies: ClassVar[tuple[str, ...]] = STRATEGIES
+
+    # --- hooks -------------------------------------------------------------
+
+    def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments that shape the ranking. Recorded in provenance."""
+        strategy = self.text_arg(args, "strategy") or DEFAULT_STRATEGY
+        if strategy not in self.strategies:
+            raise self.input_error(
+                f"Unknown strategy {strategy!r}. Choose from {list(self.strategies)}.",
+                argument="strategy",
+                value=strategy,
+            )
+        return {
+            "query": self.text_arg(args, "query", required=True),
+            "strategy": strategy,
+            "size": self.int_arg(args, "size", DEFAULT_SIZE, minimum=1),
+            "date_field": self.text_arg(args, "date_field") or DEFAULT_DATE_FIELD,
+            "date_from": self._date_arg(args, "date_from"),
+            "date_to": self._date_arg(args, "date_to"),
+            "filters": self._filters_arg(args) or None,
+            "recency_half_life_days": self._half_life_arg(args),
+            "recency_reference_date": self._date_arg(args, "recency_reference_date"),
+        }
+
+    def rank(
+        self, query: str, corpus: LocalCorpus, settings: dict[str, Any], limit: int
+    ) -> list[Hit]:
+        """Up to ``limit`` hits for one query, best first. Override to rank differently.
+
+        A ``Hit`` is ``(index, score, strategy)``, where ``index`` is the position of
+        the record in ``corpus.records``. Apply ``keep`` and ``boost`` yourself if an
+        override should still honour filters, dates and recency.
+        """
+        strategy = settings["strategy"]
+        dense = strategy in ("dense", "hybrid")
+        return rank_records(
+            query=query,
+            records=corpus.records,
+            texts=corpus.texts(),
+            strategy=strategy,
+            size=limit,
+            embedder=get_embedder() if dense else None,
+            document_matrix=ensure_embeddings(corpus) if dense else None,
+            bm25=ensure_bm25(corpus) if strategy in ("sparse", "hybrid") else None,
+            predicate=(lambda record: self.keep(record, settings))
+            if self._filters_records(settings)
+            else None,
+            boost=(lambda record: self.boost(record, settings))
+            if self._boosts_records(settings)
+            else None,
+        )
+
+    def keep(self, record: dict[str, Any], settings: dict[str, Any]) -> bool:
+        """Whether ``record`` may be returned. Default: the date range and ``filters``."""
+        date_from, date_to = settings["date_from"], settings["date_to"]
+        if date_from or date_to:
+            # A record of unknown date cannot be shown to be in range, and a
+            # temporal question should not be answered from it.
+            published = _published(record, settings["date_field"])
+            if published is None:
+                return False
+            if date_from and published.isoformat() < date_from:
+                return False
+            if date_to and published.isoformat() > date_to:
+                return False
+        for field, allowed in (settings["filters"] or {}).items():
+            value = record.get(field)
+            if isinstance(value, (list, tuple, set)):
+                present = {str(v) for v in value}
+            else:
+                present = set() if value is None else {str(value)}
+            if not present & {str(v) for v in allowed}:
+                return False
+        return True
+
+    def boost(self, record: dict[str, Any], settings: dict[str, Any]) -> float:
+        """Score multiplier for ``record``. Default: recency decay ``0.5 ** (age / half_life)``.
+
+        A record dated after the reference date counts as age 0. A record with no
+        usable date gets 0: once a question asks for recency, evidence of unknown
+        date should not outrank dated evidence.
+        """
+        half_life = settings["recency_half_life_days"]
+        reference = settings["recency_reference_date"]
+        if not half_life or not reference:
+            return 1.0
+        published = _published(record, settings["date_field"])
+        if published is None:
+            return 0.0
+        return 0.5 ** (max(0, (date.fromisoformat(reference) - published).days) / half_life)
+
+    def fuse(self, rankings: list[list[Hit]], settings: dict[str, Any]) -> list[Hit]:
+        """One ranking from the rankings of several queries. Default: reciprocal rank fusion."""
+        return reciprocal_rank_fusion(rankings)
+
+    # --- the fixed part ----------------------------------------------------
 
     def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
-        query = args.get("query")
-        if not isinstance(query, str) or not query.strip():
-            raise ToolInputError(
-                code="missing_required_arguments",
-                message="Argument 'query' is required.",
-                tool_name=TOOL_NAME,
-                details={"missing": ["query"]},
-            )
-        strategy = (args.get("strategy") or DEFAULT_STRATEGY).strip()
-        if strategy not in STRATEGIES:
-            raise ToolInputError(
-                code="invalid_argument_value",
-                message=f"Unknown strategy {strategy!r}. Choose from {list(STRATEGIES)}.",
-                tool_name=TOOL_NAME,
-                details={"argument": "strategy", "value": strategy},
-            )
-        size = int(args.get("size") or DEFAULT_SIZE)
-        date_field = (args.get("date_field") or DEFAULT_DATE_FIELD).strip()
-        date_from = _parse_date(args.get("date_from"), "date_from")
-        date_to = _parse_date(args.get("date_to"), "date_to")
-        half_life = _parse_half_life(args.get("recency_half_life_days"))
-        filters = _parse_filters(args.get("filters"))
-        extra_queries = _parse_queries(args.get("queries"))
-        queries_handle = None
-        queries_ref = None
-        requested_queries = args.get("queries_input")
-        if isinstance(requested_queries, dict):
-            stored = [
-                str(text).strip()
-                for text in requested_queries.get("query_texts") or []
-                if str(text).strip()
-            ]
-            if not stored:
-                raise ToolInputError(
-                    code="invalid_argument_value",
-                    message=(
-                        "queries_input must be a queries handle or the result of "
-                        "rewrite_query_for_retrieval."
-                    ),
-                    tool_name=TOOL_NAME,
-                    details={"argument": "queries_input"},
-                )
-            extra_queries = [*extra_queries, *stored]
-            queries_ref = run_id_of(requested_queries)
-        elif isinstance(requested_queries, str) and requested_queries.strip():
-            stored, queries_handle = self._stored_queries(
-                requested_queries.strip(), context=context
-            )
-            extra_queries = [*extra_queries, *stored]
-            queries_ref = queries_handle
-        all_queries = _unique_queries([query.strip(), *extra_queries])
+        settings = self.settings(args)
+        query, size = settings["query"], settings["size"]
+        extra_queries, queries_handle, queries_ref = self._extra_queries(args, context=context)
+        all_queries = _unique_queries([query, *extra_queries])
+        settings["queries"] = all_queries if len(all_queries) > 1 else None
 
-        corpus, source_ref = self._resolve_corpus(args, context=context)
+        corpus, source_ref = bind_corpus(args, context, tool_name=self.tool_name)
         source_handle = None if isinstance(args.get("input"), dict) else source_ref
-        records = corpus.records
-        texts = corpus.texts()
-
-        reference_date = None
-        boost = None
-        if half_life is not None:
-            reference_date = _parse_date(
-                args.get("recency_reference_date"), "recency_reference_date"
-            ) or _latest_date(records, date_field)
-            if reference_date is not None:
-                boost = _recency_boost(date_field, reference_date, half_life)
-
-        document_matrix = None
-        if strategy in ("dense", "hybrid"):
-            document_matrix = ensure_embeddings(corpus)
-
-        def rank(text: str, limit: int):
-            return rank_records(
-                query=text,
-                records=records,
-                texts=texts,
-                strategy=strategy,
-                size=limit,
-                embedder=get_embedder() if strategy in ("dense", "hybrid") else None,
-                document_matrix=document_matrix,
-                bm25=ensure_bm25(corpus) if strategy in ("sparse", "hybrid") else None,
-                predicate=_all_of(
-                    _date_predicate(date_field, date_from, date_to), _filter_predicate(filters)
-                ),
-                boost=boost,
-            )
+        if settings["recency_half_life_days"] and not settings["recency_reference_date"]:
+            latest = _latest_date(corpus.records, settings["date_field"])
+            settings["recency_reference_date"] = latest.isoformat() if latest else None
 
         if len(all_queries) == 1:
-            hits = rank(all_queries[0], size)
+            hits = self.rank(query, corpus, settings, size)
         else:
-            # Rank each phrasing deeper than `size`, then fuse by rank position.
+            # Rank each phrasing deeper than `size`, then fuse.
             pool = max(size * 3, 30)
-            hits = reciprocal_rank_fusion([rank(text, pool) for text in all_queries])[:size]
+            rankings = [self.rank(text, corpus, settings, pool) for text in all_queries]
+            hits = self.fuse(rankings, settings)
+        hits = hits[:size]
 
+        records, texts = corpus.records, corpus.texts()
         passages = [
             {
                 "id": str(records[hit.index].get(corpus.id_field)),
@@ -257,169 +301,187 @@ class RetrievePassagesTool:
         ]
 
         result = {
-            "query": query.strip(),
-            "strategy": strategy,
+            "query": query,
+            "strategy": settings["strategy"],
             "corpus": corpus.name,
             "size": size,
             "returned": len(passages),
             "passages": passages,
             "input_handle": source_handle,
-            "date_from": date_from.isoformat() if date_from else None,
-            "date_to": date_to.isoformat() if date_to else None,
-            "filters": filters or None,
-            "queries": all_queries if len(all_queries) > 1 else None,
+            "date_from": settings["date_from"],
+            "date_to": settings["date_to"],
+            "filters": settings["filters"],
+            "queries": settings["queries"],
             "queries_input_handle": queries_handle,
-            "recency_half_life_days": half_life,
-            "recency_reference_date": reference_date.isoformat() if reference_date else None,
+            "recency_half_life_days": settings["recency_half_life_days"],
+            "recency_reference_date": (
+                settings["recency_reference_date"] if settings["recency_half_life_days"] else None
+            ),
         }
         result["handle"] = self._remember(
             context,
             corpus=corpus,
             passages=passages,
-            query=query.strip(),
-            strategy=strategy,
+            settings=settings,
             source_handle=source_handle,
-            also_derived_from=[queries_handle] if queries_handle else None,
-            date_range=(result["date_from"], result["date_to"]),
-            extra_args={
-                key: result[key]
-                for key in (
-                    "filters",
-                    "queries",
-                    "recency_half_life_days",
-                    "recency_reference_date",
-                )
-                if result[key]
-            },
+            queries_handle=queries_handle,
         )
-        result["provenance"] = make_provenance(
-            TOOL_NAME,
-            settings={
-                "query": result["query"],
-                "strategy": strategy,
-                "size": size,
+        result["provenance"] = self.provenance(
+            {
+                **settings,
                 "corpus": corpus.name,
-                "queries": result["queries"],
-                "date_field": date_field,
-                "date_from": result["date_from"],
-                "date_to": result["date_to"],
-                "filters": result["filters"],
-                "recency_half_life_days": half_life,
                 "recency_reference_date": result["recency_reference_date"],
             },
             derived_from=[source_ref, queries_ref],
         )
         return result
 
-    def _stored_queries(self, handle: str, *, context: ToolContext) -> tuple[list[str], str]:
-        """Query texts from a stored queries recordset, and the handle they were bound through."""
-        if context.recordsets is None:
-            raise ToolInputError(
-                code="missing_required_arguments",
-                message="queries_input needs recordset memory; pass the query texts as queries=[...] instead.",
-                tool_name=TOOL_NAME,
-                details={"argument": "queries_input"},
-            )
-        record = context.recordsets.bind(
-            object_type="queries", tool_name=TOOL_NAME, requested=handle
-        )
-        texts = []
-        for row in context.recordsets.records(record):
-            text = str(row.get("query") if isinstance(row, dict) else row).strip()
-            if text:
-                texts.append(text)
-        return texts, record.handle
+    def render(self, data: dict[str, Any]) -> dict[str, Any]:
+        columns = ["rank", "score", "id", "snippet"]
+        return {
+            "render_type": "table",
+            "columns": columns,
+            "rows": [{k: p.get(k) for k in columns} for p in data["passages"]],
+            "caption": f"{data['returned']} passages for {data['query']!r} ({data['strategy']})",
+        }
 
-    def _resolve_corpus(self, args: dict[str, Any], *, context: ToolContext):
-        """Explicit corpus name wins; then a handle; then the newest corpus."""
-        return bind_corpus(args, context, tool_name=TOOL_NAME)
+    # --- plumbing ----------------------------------------------------------
+
+    def _filters_records(self, settings: dict[str, Any]) -> bool:
+        """Whether ``keep`` has anything to decide; skipping it keeps an unfiltered walk fast."""
+        overridden = type(self).keep is not RetrievePassagesTool.keep
+        return overridden or bool(
+            settings["date_from"] or settings["date_to"] or settings["filters"]
+        )
+
+    def _boosts_records(self, settings: dict[str, Any]) -> bool:
+        """Whether ``boost`` can change anything; boosting re-sorts the whole ranking."""
+        overridden = type(self).boost is not RetrievePassagesTool.boost
+        return overridden or bool(
+            settings["recency_half_life_days"] and settings["recency_reference_date"]
+        )
+
+    def _extra_queries(self, args: dict[str, Any], *, context: ToolContext):
+        """``queries`` plus stored or upstream rewrites. Returns (texts, handle, provenance ref)."""
+        extra = self._queries_arg(args)
+        given = args.get("queries_input")
+        if isinstance(given, dict):
+            stored = [str(t).strip() for t in given.get("query_texts") or [] if str(t).strip()]
+            if not stored:
+                raise self.input_error(
+                    "queries_input must be a queries handle or the result of "
+                    "rewrite_query_for_retrieval.",
+                    argument="queries_input",
+                )
+            return [*extra, *stored], None, run_id_of(given)
+        if isinstance(given, str) and given.strip():
+            if context.recordsets is None:
+                raise self.input_error(
+                    "queries_input needs recordset memory; pass the query texts as queries=[...] instead.",
+                    code="missing_required_arguments",
+                    argument="queries_input",
+                )
+            record = context.recordsets.bind(
+                object_type="queries", tool_name=self.tool_name, requested=given.strip()
+            )
+            stored = []
+            for row in context.recordsets.records(record):
+                text = str(row.get("query") if isinstance(row, dict) else row).strip()
+                if text:
+                    stored.append(text)
+            return [*extra, *stored], record.handle, record.handle
+        return extra, None, None
 
     def _remember(
-        self,
-        context: ToolContext,
-        *,
-        corpus,
-        passages: list[dict[str, Any]],
-        query: str,
-        strategy: str,
-        source_handle: str | None,
-        date_range: tuple = (None, None),
-        extra_args: dict | None = None,
-        also_derived_from: list[str] | None = None,
+        self, context: ToolContext, *, corpus, passages, settings, source_handle, queries_handle
     ) -> str | None:
         """Store the hit ids by reference, with lineage back to the corpus."""
         if context.recordsets is None:
             return None
+        args = {"query": settings["query"], "strategy": settings["strategy"], "corpus": corpus.name}
+        args.update(
+            {
+                key: settings[key]
+                for key in (
+                    "date_from",
+                    "date_to",
+                    "filters",
+                    "queries",
+                    "recency_half_life_days",
+                    "recency_reference_date",
+                )
+                if settings.get(key)
+                and (key != "recency_reference_date" or settings["recency_half_life_days"])
+            }
+        )
         record = context.recordsets.remember(
             object_type=OBJECT_TYPE,
-            stage=STAGE,
-            produced_by=TOOL_NAME,
-            args={
-                "query": query,
-                "strategy": strategy,
-                "corpus": corpus.name,
-                **({"date_from": date_range[0]} if date_range[0] else {}),
-                **({"date_to": date_range[1]} if date_range[1] else {}),
-                **(extra_args or {}),
-            },
+            stage=self.stage,
+            produced_by=self.tool_name,
+            args=args,
             ref=local_ref(corpus=corpus.name, ids=[p["id"] for p in passages]),
             count=len(passages),
-            summary=f"{len(passages)} passages for {query!r} ({strategy})",
-            derived_from=[h for h in [source_handle, *(also_derived_from or [])] if h],
+            summary=f"{len(passages)} passages for {settings['query']!r} ({settings['strategy']})",
+            derived_from=[h for h in (source_handle, queries_handle) if h],
         )
         return record.handle
 
-    def execute(self, args: dict[str, Any], *, context: ToolContext) -> str:
-        data = self.run(args, context=context)
-        render = {
-            "render_type": "table",
-            "columns": ["rank", "score", "id", "snippet"],
-            "rows": [
-                {k: p.get(k) for k in ("rank", "score", "id", "snippet")} for p in data["passages"]
-            ],
-            "caption": f"{data['returned']} passages for {data['query']!r} ({data['strategy']})",
-        }
-        return json.dumps({"render": render, **data})
-
-
-def _parse_date(value: Any, argument: str) -> date | None:
-    """ISO date argument -> ``date``; blank -> None; anything else is an input error."""
-    if value is None or (isinstance(value, str) and not value.strip()):
-        return None
-    try:
-        return date.fromisoformat(str(value).strip()[:10])
-    except ValueError as exc:
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message=f"{argument} must be an ISO date (YYYY-MM-DD), got {value!r}.",
-            tool_name=TOOL_NAME,
-            details={"argument": argument, "value": value},
-        ) from exc
-
-
-def _date_predicate(field: str, date_from: date | None, date_to: date | None):
-    """Keep records whose ``field`` falls in the range. None when unconstrained.
-
-    A record with a missing or unparseable date is excluded once a range is
-    set: it cannot be shown to be in range, and a temporal question should
-    not be answered from evidence of unknown date.
-    """
-    if date_from is None and date_to is None:
-        return None
-
-    def in_range(record: dict) -> bool:
-        raw = record.get(field)
+    def _date_arg(self, args: dict[str, Any], name: str) -> str | None:
+        """An ISO date argument, normalized to YYYY-MM-DD; None when blank."""
+        value = args.get(name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
         try:
-            published = date.fromisoformat(str(raw).strip()[:10])
-        except ValueError:
-            return False
-        if date_from is not None and published < date_from:
-            return False
-        if date_to is not None and published > date_to:
-            return False
-        return True
+            return date.fromisoformat(str(value).strip()[:10]).isoformat()
+        except ValueError as exc:
+            raise self.input_error(
+                f"{name} must be an ISO date (YYYY-MM-DD), got {value!r}.",
+                argument=name,
+                value=value,
+            ) from exc
 
-    return in_range
+    def _half_life_arg(self, args: dict[str, Any]) -> float | None:
+        value = args.get("recency_half_life_days")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            days = float(value)
+        except (TypeError, ValueError):
+            days = 0.0
+        if isinstance(value, bool) or days <= 0:
+            raise self.input_error(
+                f"recency_half_life_days must be a positive number of days, got {value!r}.",
+                argument="recency_half_life_days",
+                value=value,
+            )
+        return days
+
+    def _filters_arg(self, args: dict[str, Any]) -> dict[str, list]:
+        value = args.get("filters")
+        if value is None or value == {}:
+            return {}
+        if not isinstance(value, dict) or not all(isinstance(k, str) for k in value):
+            raise self.input_error(
+                "filters must be an object mapping field names to a value or a list of values.",
+                argument="filters",
+                value=value,
+            )
+        return {
+            field: list(values) if isinstance(values, (list, tuple, set)) else [values]
+            for field, values in value.items()
+        }
+
+    def _queries_arg(self, args: dict[str, Any]) -> list[str]:
+        value = args.get("queries")
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list) or not all(isinstance(q, str) for q in value):
+            raise self.input_error(
+                "queries must be a list of strings.", argument="queries", value=value
+            )
+        return [q.strip() for q in value if q.strip()]
 
 
 def _published(record: dict, field: str) -> date | None:
@@ -432,100 +494,6 @@ def _published(record: dict, field: str) -> date | None:
 def _latest_date(records: list[dict], field: str) -> date | None:
     dates = [d for d in (_published(r, field) for r in records) if d is not None]
     return max(dates) if dates else None
-
-
-def _parse_half_life(value: Any) -> float | None:
-    if value is None or (isinstance(value, str) and not value.strip()):
-        return None
-    try:
-        days = float(value)
-    except (TypeError, ValueError):
-        days = 0.0
-    if isinstance(value, bool) or days <= 0:
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message=f"recency_half_life_days must be a positive number of days, got {value!r}.",
-            tool_name=TOOL_NAME,
-            details={"argument": "recency_half_life_days", "value": value},
-        )
-    return days
-
-
-def _recency_boost(field: str, reference: date, half_life: float):
-    """Score multiplier ``0.5 ** (age / half_life)``.
-
-    A record dated after the reference date counts as age 0. A record with no
-    usable date gets a factor of 0: once a question asks for recency, evidence
-    of unknown date should not outrank dated evidence.
-    """
-
-    def factor(record: dict) -> float:
-        published = _published(record, field)
-        if published is None:
-            return 0.0
-        return 0.5 ** (max(0, (reference - published).days) / half_life)
-
-    return factor
-
-
-def _parse_filters(value: Any) -> dict[str, list]:
-    if value is None or value == {}:
-        return {}
-    if not isinstance(value, dict) or not all(isinstance(k, str) for k in value):
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message="filters must be an object mapping field names to a value or a list of values.",
-            tool_name=TOOL_NAME,
-            details={"argument": "filters", "value": value},
-        )
-    return {
-        field: list(values) if isinstance(values, (list, tuple, set)) else [values]
-        for field, values in value.items()
-    }
-
-
-def _filter_predicate(filters: dict[str, list]):
-    """Every field must match; within a field, any listed value will do."""
-    if not filters:
-        return None
-    wanted = {field: {str(v) for v in values} for field, values in filters.items()}
-
-    def matches(record: dict) -> bool:
-        for field, allowed in wanted.items():
-            value = record.get(field)
-            if isinstance(value, (list, tuple, set)):
-                present = {str(v) for v in value}
-            else:
-                present = set() if value is None else {str(value)}
-            if not present & allowed:
-                return False
-        return True
-
-    return matches
-
-
-def _all_of(*predicates):
-    active = [p for p in predicates if p is not None]
-    if not active:
-        return None
-    if len(active) == 1:
-        return active[0]
-    return lambda record: all(p(record) for p in active)
-
-
-def _parse_queries(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, list) or not all(isinstance(q, str) for q in value):
-        raise ToolInputError(
-            code="invalid_argument_value",
-            message="queries must be a list of strings.",
-            tool_name=TOOL_NAME,
-            details={"argument": "queries", "value": value},
-        )
-    return [q.strip() for q in value if q.strip()]
 
 
 def _unique_queries(texts: list[str]) -> list[str]:
