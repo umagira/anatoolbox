@@ -3,30 +3,28 @@
 One tool, three retrieval strategies, so comparing them is a changed argument
 rather than a changed pipeline:
 
-    retrieve_passages(query="agentic web standards", strategy="sparse")
-    retrieve_passages(query="agentic web standards", strategy="dense")
-    retrieve_passages(query="agentic web standards", strategy="hybrid")
+    retrieve_passages(query="agentic web standards", input=chunks, strategy="sparse")  # BM25
+    retrieve_passages(query="agentic web standards", input=chunks, strategy="dense")   # embeddings
+    retrieve_passages(query="agentic web standards", input=chunks, strategy="hybrid")  # both, fused
 
-Binding follows the usual consumer rules: an explicit ``input`` handle wins,
-otherwise the newest corpus in memory is used. The result is remembered as a
-``passages`` recordset whose lineage names the corpus it came from, so a later
-score or table can say exactly which evidence it rests on.
+``input`` is the result of ``ingest_corpus`` or ``chunk_by_size``; its run id goes
+into this result's provenance. ``size`` is how many passages come back — the top
+k: too few misses evidence, too many adds noise and cost further down.
 
-Two ranking controls beyond the strategy. ``filters`` restrict results to
-records whose metadata matches (``{"domain": ["venturebeat"]}``; list fields
-such as tags match on any shared value). ``recency_half_life_days`` multiplies
-each score by ``0.5 ** (age / half_life)`` so newer records rise. Age is
-measured from ``recency_reference_date``, which defaults to the newest date in
+**Metadata.** ``filters`` keep only records whose metadata matches
+(``{"domain": ["venturebeat"]}``; list fields such as tags match on any shared
+value), and ``date_from`` / ``date_to`` keep a period. ``recency_half_life_days``
+multiplies each score by ``0.5 ** (age / half_life)``, so newer records rise. Age
+is measured from ``recency_reference_date``, which defaults to the newest date in
 the corpus, so a historical corpus is not penalized just for being old.
 
-``queries`` adds rewrites of the question (see ``rewrite_query_for_retrieval``):
-each query is ranked on its own and the rankings are fused with reciprocal
-rank fusion, so a document relevant to any phrasing can surface.
+**Several phrasings.** ``queries`` adds rewrites of the question, and
+``queries_input`` takes the result of ``rewrite_query_for_retrieval``. Each query
+is ranked on its own and the rankings are fused with reciprocal rank fusion, so a
+document relevant to any phrasing can surface.
 
-In a pipeline, pass results rather than handles: ``input`` may be the result of
-``chunk_by_size`` or ``ingest_corpus``, and ``queries_input`` the
-result of ``rewrite_query_for_retrieval``. Their run ids go into this result's
-provenance.
+**Agents.** With recordset memory, ``input`` may instead be a handle such as
+``corpus_1``, and without ``input`` the newest corpus is used.
 
 **Other retrieval methods.** Subclass ``RetrievePassagesTool`` with a new
 ``tool_name`` and override a hook: ``rank`` (how one query ranks the corpus —

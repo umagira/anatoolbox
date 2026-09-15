@@ -1,24 +1,24 @@
 """rerank_passages — re-score retrieved candidates on their full text.
 
-Retrieval ranks compressed representations; this step reads each candidate's
-original text together with the query and re-orders the candidates by that
-judgment. A reranker is slow, so it runs on a generous candidate set from
-retrieval rather than on the whole corpus:
+Retrieval ranks compressed representations: an embedding squeezes a chunk into
+one vector. A reranker reads the question together with each candidate's
+original text and orders the candidates by that judgment. It is slow, so it runs
+on a generous candidate set from retrieval, not on the whole corpus:
 
-    retrieve_passages(query="...", strategy="hybrid", size=30)   # fast, broad
-    rerank_passages(keep=5)                                      # slow, precise
+    candidates = retrieve_passages(query=question, input=chunks, size=30)   # fast, broad
+    top = rerank_passages(input=candidates, keep=5)                        # slow, precise
 
-The reranker reads the **full text** of every candidate from its corpus — not
-the retrieval snippet — because recovering what compression and truncation
-lost is the point. ``max_chars`` bounds how much of each text it reads, and a
-cross-encoder stops at its own token limit anyway (often 512 tokens): one more
-reason to rerank chunks rather than whole articles.
+The reranker reads the **full text** of every candidate from its corpus, not the
+retrieval snippet. ``max_chars`` bounds how much of each text it reads; a
+cross-encoder also stops at its own token limit (often 512 tokens) — one more
+reason to rerank chunks rather than whole articles. ``max_per_source`` keeps at
+most that many passages per article.
 
-Every result reports its ``retrieval_rank`` and ``rank_change``, so the effect
+Every passage reports its ``retrieval_rank`` and ``rank_change``, so the effect
 of reranking is visible rather than assumed. The default reranker is a small
-cross-encoder; plug in any other with ``anatoolbox.reranking.configure_reranker``,
-or subclass ``RerankPassagesTool`` and override ``score`` (for example, to let a
-language model judge relevance).
+cross-encoder; plug in another with ``anatoolbox.reranking.configure_reranker``,
+or subclass ``RerankPassagesTool`` and override ``score`` — for example to let a
+language model judge relevance.
 """
 
 from __future__ import annotations

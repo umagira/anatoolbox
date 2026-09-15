@@ -1,39 +1,42 @@
 """synthesize_answer — answer a question from retrieved passages, with citations.
 
-The generation half of RAG. It takes the passages a retrieval (and optionally
-a rerank) produced, curates them into a prompt, and asks a language model for
-an answer in which claims point back at numbered sources:
+The generation half of RAG. It takes the passages that retrieval (and optionally
+reranking) produced, curates them into a prompt, and asks a language model for
+an answer whose claims point back at numbered sources:
 
-    retrieve_passages(query="...", size=30)
-    rerank_passages(keep=8)
-    synthesize_answer(question="...")        # binds the reranked passages
+    candidates = retrieve_passages(query=question, input=chunks, size=30)
+    top = rerank_passages(input=candidates, keep=8)
+    answer = synthesize_answer(question=question, input=top)
+
+The prompt has the three parts of a basic RAG prompt: a system prompt with the
+answering rules; the instruction — the question, plus optional ``instructions``
+on audience, format or length; and the context — the numbered sources with their
+title, date and url.
 
 What happens between retrieval and the model matters as much as either:
 
-* **Numbered sources, checked citations.** Passages are labelled [S1]…[Sn]
-  with their title, publication date and url, and the answer cites labels.
-  The tool checks them: labels that were never provided come back as
-  ``unknown_citations``, sources the answer never used as
+* **Numbered sources, checked citations.** Passages are labelled [S1]…[Sn],
+  and the answer cites labels. The tool checks them: labels that were never
+  provided come back as ``unknown_citations``, sources the answer never used as
   ``uncited_sources``. Neither proves an answer faithful, but both are cheap,
-  objective signals to evaluate against — and small models do invent labels.
-  ``citation_coverage`` counts how many of the answer's sentences carry an
-  inline citation; a model that lists every label at the end scores 0.
+  objective signals — and small models do invent labels. ``citation_coverage``
+  counts how many of the answer's sentences carry an inline citation; a model
+  that lists every label at the end scores 0.
 * **Two answering modes.** ``grounded`` restricts the answer to what the
   sources say and asks the model to say when they are not enough.
   ``blended`` lets it add background knowledge, marked as background and
   never cited — for exploratory questions where the sources alone are thin.
 * **Context curation.** Duplicate passages are dropped before prompting, so
-  the model is not shown the same evidence twice. Models attend least to the
-  middle of a long context (Liu et al., 2023, "Lost in the Middle"), so by
-  default the most relevant passages go at the start and the end. After
-  chunking, several chunks of one article can crowd the context;
-  ``max_per_source`` caps them.
+  the model is not shown the same evidence twice. Models use the middle of a
+  long context least (Liu et al., 2023, "Lost in the Middle"), so by default
+  the most relevant passages go at the start and the end. After chunking,
+  several chunks of one article can crowd the context; ``max_per_source`` caps
+  them.
 * **Dates in view.** Every source shows its publication date, and the
   instructions ask the model to use dates when the question concerns time.
 * **Graph facts.** ``facts`` adds facts from a knowledge graph (see
-  ``anatoolbox.graph``) as evidence labelled [G1]…[Gn], cited like sources
-  and checked the same way. Which facts to add — the graph-aware part of a
-  graph-enhanced RAG system — is up to the caller.
+  ``anatoolbox.graph``) as evidence labelled [G1]…[Gn], cited like sources and
+  checked the same way. Which facts to add is up to the caller.
 
 The model comes from the ``strong`` role of ``anatoolbox.llm_client``, falling
 back to the default model; the model actually used is recorded with the answer.
@@ -450,7 +453,8 @@ class SynthesizeAnswerTool(BaseTool):
 
         given_facts, facts_ref = self._facts(args)
         facts = self.curate_facts(given_facts, settings)
-        # Without facts, call user_prompt as a text-only override written without them expects.
+        # With no facts, call user_prompt without them, so an override that has no
+        # `facts` parameter keeps working for text-only answers.
         user = (
             self.user_prompt(question, sources, settings, facts)
             if facts

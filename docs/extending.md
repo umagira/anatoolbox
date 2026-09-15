@@ -98,14 +98,14 @@ to add an instruction.
 |---|---|---|
 | `ingest_corpus` | `load(settings)`, `prepare(corpus, settings)` | other file formats, filtering or cleaning records on the way in |
 | `ingest_knowledge_graph` | `load(settings)`, `prepare(graph, settings)` | another graph format, keeping only your track's relation types, adding aliases |
-| `chunk_by_size` | `split(text, settings)`, `contextualize(record, chunk_text, settings)`, `corpus_name(source, settings)` | structural, sentence or semantic chunking; LLM-written chunk context |
-| `rewrite_query_for_retrieval` | `system_prompt(settings)`, `user_prompt(settings)`, `rewrite(settings, context)`, `clean(reply, settings)` | hypothetical answers to embed, query classification, other rewriting strategies |
+| `chunk_by_size` | `split(text, settings)`, `contextualize(record, chunk_text, settings)`, `corpus_name(source, settings)` | sentence, paragraph, semantic or hierarchical chunking; LLM-written chunk context |
+| `rewrite_query_for_retrieval` | `system_prompt(settings)`, `user_prompt(settings)`, `rewrite(settings, context)`, `clean(reply, settings)` | query expansion, transformation and classification; hypothetical answers to embed |
 | `retrieve_passages` | `rank(query, corpus, settings, limit)`, `keep(record, settings)`, `boost(record, settings)`, `fuse(rankings, settings)` | weighted hybrid scoring, another index, metadata rules, entity-anchored retrieval |
 | `rerank_passages` | `score(query, texts, settings)`, `reranker(settings)` | another cross-encoder, an LLM judging relevance |
-| `synthesize_answer` | `curate(passages, settings)`, `curate_facts(facts, settings)`, `system_prompt(settings)`, `user_prompt(question, sources, settings, facts)`, `generate(system, user, settings, context)` | context compression, choosing graph facts, stricter prompts, step-by-step reasoning, draft-and-revise |
+| `synthesize_answer` | `curate(passages, settings)`, `curate_facts(facts, settings)`, `system_prompt(settings)`, `user_prompt(question, sources, settings, facts)`, `generate(system, user, settings, context)` | context fusion and compression, choosing graph facts, prompt constraints, chain-of-thought, reflection rounds |
 | `extract_test_questions` | `sample(corpus, settings)`, `question_types` (class attribute), `system_prompt(settings)`, `user_prompt(record, text, settings)`, `generate(...)`, `clean(reply, record, settings)` | samples stratified by month or entity, your own question types |
 | `calculate_retrieval_metrics` | `metrics(retrieved, relevant, settings)`, `retrieved_ids(item, settings)`, `relevant_ids(item, settings)` | nDCG, average precision |
-| `score_rag_answer` | `criteria` (class attribute), `system_prompt(settings)`, `user_prompt(question, answer, sources, settings, facts)`, `judge(...)`, `clean(reply, settings)` | your own criteria, several judges |
+| `score_rag_answer` | `criteria` (class attribute), `system_prompt(settings)`, `user_prompt(question, answer, sources, settings, facts)`, `judge(...)`, `clean(reply, settings)`, `review(judged, settings)` | your own criteria, several judges, stricter checks on the judge |
 
 Knowledge graphs are not a tool but a data structure: `anatoolbox.graph.KnowledgeGraph` holds
 your Stage 1 graph and offers plain lookups (`find_entities`, `facts_about`, `neighbors`,
@@ -114,7 +114,8 @@ your Stage 1 graph and offers plain lookups (`find_entities`, `facts_about`, `ne
 `synthesize_answer(facts=...)`.
 
 Each tool's module docstring and hook docstrings say what a hook receives and must return.
-`help(RetrievePassagesTool.rank)` shows it in a notebook.
+In a notebook, `help(RetrievePassagesTool.rank)` shows one hook's documentation; the course
+notebook's `show_hooks(RetrievePassagesTool)` lists all of a tool's hooks at once.
 
 Every tool also has `settings(args)`. The helpers on the base class keep argument checks
 short and their errors consistent: `self.text_arg`, `self.int_arg`, `self.choice_arg`, and
