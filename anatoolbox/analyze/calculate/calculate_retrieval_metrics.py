@@ -103,6 +103,7 @@ class CalculateRetrievalMetricsTool(BaseTool):
     # --- hooks -------------------------------------------------------------
 
     def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments: the cut-offs ``k`` and how passages are matched."""
         k = args.get("k", list(DEFAULT_K))
         if isinstance(k, int) and not isinstance(k, bool):
             k = [k]
@@ -139,6 +140,7 @@ class CalculateRetrievalMetricsTool(BaseTool):
         return ids
 
     def relevant_ids(self, item: dict[str, Any], settings: dict[str, Any]) -> set[str]:
+        """The ids that should be retrieved for one item."""
         value = item.get("relevant")
         if isinstance(value, (str, int)):
             value = [value]

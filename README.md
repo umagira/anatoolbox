@@ -236,15 +236,16 @@ Endpoints differ in what they accept, so parameters an endpoint rejects are drop
 and remembered, and JSON requests fall back from strict schemas to JSON mode to
 prompt-only.
 
-## Try-out notebooks
+## Notebooks
 
-Each build day ships a notebook that exercises that day's features on the real
+All notebooks run on the real
 [AI Media Dataset](https://www.kaggle.com/datasets/jannalipenkova/ai-media-dataset),
 framed around the HSLU *Computational Language Technologies* capstone. The dataset is
 downloaded from Kaggle's public API on first run — no Kaggle account needed.
 
 | Notebook | Covers |
 |---|---|
+| [`notebooks/course_project_skeleton.ipynb`](notebooks/course_project_skeleton.ipynb) | **The Stage 3 project skeleton**, structured like Chapter 7: search (build, evaluate, optimize) and RAG (set up, evaluate, optimize — incl. the Stage 1 knowledge graph), with a baseline and a measurement at every step, one worked optimization, and subclass templates for the rest |
 | [`notebooks/day2_retrieval_ai_media.ipynb`](notebooks/day2_retrieval_ai_media.ipynb) | Ingesting the corpus, sparse/dense/hybrid retrieval, date windows, chunking, lineage |
 | [`notebooks/day3_rag_ai_media.ipynb`](notebooks/day3_rag_ai_media.ipynb) | Choosing an LLM endpoint, chunking, query rewriting, fused retrieval, reranking, cited answers with checked citations |
 
@@ -253,7 +254,8 @@ downloaded from Kaggle's public API on first run — no Kaggle account needed.
 ```bash
 pip install anatoolbox                  # contracts + memory + BM25 retrieval
 pip install "anatoolbox[embeddings]"    # + dense retrieval with real models
-pip install "anatoolbox[local]"         # + parquet corpora
+pip install "anatoolbox[parquet]"       # + parquet corpora
+pip install "anatoolbox[local]"         # both of the above
 ```
 
 The core has a single third-party dependency. BM25 is implemented in-tree, and

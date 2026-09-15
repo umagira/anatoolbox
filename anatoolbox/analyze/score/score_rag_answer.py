@@ -190,6 +190,7 @@ class ScoreRagAnswerTool(BaseTool):
     # --- hooks -------------------------------------------------------------
 
     def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments. Recorded in provenance, including the judge model actually used."""
         reference = self.text_arg(args, "reference_answer") or None
         requested = args.get("criteria")
         if requested is None:
@@ -222,6 +223,7 @@ class ScoreRagAnswerTool(BaseTool):
         }
 
     def system_prompt(self, settings: dict[str, Any]) -> str:
+        """The system prompt: the scoring instructions and the criteria's descriptions."""
         return SYSTEM_PROMPT.format(
             low=MIN_SCORE,
             high=MAX_SCORE,
@@ -236,6 +238,7 @@ class ScoreRagAnswerTool(BaseTool):
         settings: dict[str, Any],
         facts: list[dict[str, Any]] | tuple = (),
     ) -> str:
+        """The user message: question, sources, graph facts, reference answer and the answer."""
         limit = settings["max_chars_per_source"]
         blocks = []
         for source in sources:

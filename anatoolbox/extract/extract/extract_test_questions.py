@@ -169,6 +169,7 @@ class ExtractTestQuestionsTool(BaseTool):
     # --- hooks -------------------------------------------------------------
 
     def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments. Recorded in provenance, including the model actually used."""
         per_record = self.int_arg(args, "questions_per_record", DEFAULT_QUESTIONS_PER_RECORD)
         if per_record > MAX_QUESTIONS_PER_RECORD:
             raise self.input_error(
@@ -208,6 +209,7 @@ class ExtractTestQuestionsTool(BaseTool):
         return random.Random(settings["seed"]).sample(eligible, size)
 
     def system_prompt(self, settings: dict[str, Any]) -> str:
+        """The system prompt: the task, the question types and the rules."""
         return SYSTEM_PROMPT.format(
             n=settings["questions_per_record"],
             types="\n".join(
@@ -216,6 +218,7 @@ class ExtractTestQuestionsTool(BaseTool):
         )
 
     def user_prompt(self, record: dict[str, Any], text: str, settings: dict[str, Any]) -> str:
+        """The user message: one record's title, date and text."""
         lines = []
         if record.get("title"):
             lines.append(f"Title: {record['title']}")
@@ -225,6 +228,7 @@ class ExtractTestQuestionsTool(BaseTool):
         return "\n".join(lines) + ("\n\n" if lines else "") + body
 
     def response_schema(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """The JSON schema the reply must follow, strictly where the endpoint supports it."""
         return {
             "type": "object",
             "additionalProperties": False,

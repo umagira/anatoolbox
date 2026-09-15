@@ -256,6 +256,7 @@ class RewriteQueryForRetrievalTool(BaseTool):
         }
 
     def system_prompt(self, settings: dict[str, Any]) -> str:
+        """The system prompt: the task, the strategy's instruction and the rules."""
         collection = settings["collection"]
         return SYSTEM_PROMPT.format(
             strategy=STRATEGY_INSTRUCTIONS[settings["strategy"]].format(n=settings["max_queries"]),
@@ -263,6 +264,7 @@ class RewriteQueryForRetrievalTool(BaseTool):
         )
 
     def user_prompt(self, settings: dict[str, Any]) -> str:
+        """The user message: the question."""
         return f"Question: {settings['question']}"
 
     def rewrite(self, settings: dict[str, Any], context: ToolContext) -> Any:

@@ -77,6 +77,7 @@ class IngestKnowledgeGraphTool(BaseTool):
     input_schema = _INPUT_SCHEMA
 
     def settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Checked arguments. Recorded in provenance, with file names rather than paths."""
         return {
             "path": self.text_arg(args, "path", required=True),
             "name": self.text_arg(args, "name") or None,
@@ -87,6 +88,7 @@ class IngestKnowledgeGraphTool(BaseTool):
         }
 
     def load(self, settings: dict[str, Any]) -> KnowledgeGraph:
+        """Read the graph. Default: an edge table or node-link JSON via ``KnowledgeGraph.from_file``."""
         return KnowledgeGraph.from_file(
             settings["path"],
             name=settings["name"],

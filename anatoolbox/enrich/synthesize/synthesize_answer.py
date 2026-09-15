@@ -406,6 +406,7 @@ class SynthesizeAnswerTool(BaseTool):
         ]
 
     def system_prompt(self, settings: dict[str, Any]) -> str:
+        """The system prompt: the answering rules for the chosen mode."""
         return SYSTEM_PROMPT.format(grounding=GROUNDING[settings["mode"]])
 
     def user_prompt(
@@ -415,6 +416,7 @@ class SynthesizeAnswerTool(BaseTool):
         settings: dict[str, Any],
         facts: list[dict[str, Any]] | tuple = (),
     ) -> str:
+        """The user message: question, numbered sources, graph facts and extra instructions."""
         return build_user_prompt(
             question, sources, instructions=settings["instructions"], facts=facts
         )
