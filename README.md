@@ -43,7 +43,7 @@ with a known prefix is rejected.
 
 ### 2. Recordset dataflow
 
-Stage chaining runs through **handles**, not through the conversation.
+In an agent, stage chaining runs through **handles**, not through the conversation.
 
 ```python
 handle = context.recordsets.remember(
@@ -114,31 +114,41 @@ ingest, chunk, rewrite, retrieve, rerank, synthesize = resolve_tools(
     ["ingest_corpus", "chunk_articles_by_paragraph", "rewrite_query_for_retrieval",
      "retrieve_passages", "rerank_passages", "synthesize_answer"]
 )
+ctx = ToolContext()  # a notebook or batch pipeline: no memory needed
 question = "Which standards for AI agents emerged, and who backs them?"
 
-ingest.run({"path": "ai_media.csv", "text_field": "content"}, context=ctx)
-# -> corpus_1
+articles = ingest.run({"path": "ai_media.csv", "text_field": "content"}, context=ctx)
+chunks = chunk.run({"input": articles, "target_words": 150}, context=ctx)
+queries = rewrite.run({"question": question, "strategy": "decompose"}, context=ctx)
+candidates = retrieve.run(
+    {"query": question, "input": chunks, "queries_input": queries, "strategy": "hybrid", "size": 30},
+    context=ctx,
+)
+top = rerank.run({"input": candidates, "keep": 6}, context=ctx)
+answer = synthesize.run({"question": question, "input": top}, context=ctx)
 
-chunk.run({"target_words": 150}, context=ctx)
-# -> corpus_2: paragraph chunks, each linked to its article, derived_from ['corpus_1']
-
-rewrite.run({"question": question, "strategy": "decompose"}, context=ctx)
-# -> queries_1: one self-contained query per part of the question
-
-retrieve.run({"query": question, "queries_input": "queries_1", "strategy": "hybrid", "size": 30}, context=ctx)
-# -> passages_1: a generous candidate set, derived_from ['corpus_2', 'queries_1']
-
-rerank.run({"keep": 6}, context=ctx)
-# -> passages_2: the candidates re-scored on their full text, derived_from ['passages_1']
-
-synthesize.run({"question": question}, context=ctx)
-# -> answer_1: cited [S1]…[Sn], with invented labels, unused sources and
-#    citation coverage reported, derived_from ['passages_2']
+answer["answer_markdown"]            # cited [S1]…[Sn], with invented labels, unused sources
+                                     # and citation coverage reported alongside
+answer["provenance"]["derived_from"]  # -> [top["provenance"]["run_id"]]
 ```
 
 `strategy` is `sparse` (BM25), `dense` (embeddings), or `hybrid` (reciprocal
 rank fusion of the two) — so comparing retrieval strategies is a changed
 argument, not a changed pipeline.
+
+## Pipelines and agents
+
+The same tools run in two modes.
+
+- **Pipelines and notebooks** pass each result into the next tool as `input`. Nothing is
+  bound implicitly, and every result carries a `provenance` block: its `run_id`, the tool,
+  the effective settings (defaults included), the package version, a timestamp, and the
+  `run_id`s it was `derived_from`. It is plain JSON — save it next to your results, and you
+  can later tell which corpus, chunking, queries, reranker and model produced each answer.
+- **Agents** attach recordset memory: `ToolContext(recordsets=Memory(...))`. A language model
+  then refers to results by short handles such as `passages_2` instead of copying data through
+  its context window, and a tool called without `input` binds the newest compatible result.
+  Provenance names those handles.
 
 ## Choose a language model
 

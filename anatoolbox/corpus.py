@@ -490,11 +490,19 @@ def _require_numpy_for_corpus() -> Any:
 def bind_corpus(
     args: dict[str, Any], context: Any, *, tool_name: str
 ) -> tuple[LocalCorpus, str | None]:
-    """Resolve which corpus a consuming tool works on.
+    """Resolve which corpus a consuming tool works on, and what it came from.
 
-    Precedence follows the consumer rules: an explicit ``corpus`` name, then an
-    ``input`` handle, then the newest ``corpus`` recordset in memory. Returns
-    the corpus and the handle it was bound through (None for an explicit name).
+    In precedence order:
+
+    1. ``corpus`` — an explicit corpus name. Nothing upstream is recorded.
+    2. ``input`` as a result object (pipelines and notebooks) — the result of
+       ``ingest_corpus`` or ``chunk_articles_by_paragraph``, which names its
+       ``corpus``. Returns that result's ``run_id``.
+    3. ``input`` as a handle, or no input at all (agents with recordset memory)
+       — binds the named recordset, or else the newest ``corpus`` recordset.
+       Returns the handle.
+
+    Without recordset memory nothing is bound implicitly: a pipeline names its input.
     """
     from anatoolbox.errors import ToolInputError
 
@@ -502,23 +510,36 @@ def bind_corpus(
     if named:
         return _corpus_or_input_error(named, tool_name), None
 
+    given = args.get("input")
+    if isinstance(given, dict):
+        name = str(given.get("corpus") or "").strip()
+        if not name:
+            raise ToolInputError(
+                code="invalid_argument_value",
+                message=(
+                    "`input` must be a corpus handle or a result that names its corpus, "
+                    "such as the result of ingest_corpus or chunk_articles_by_paragraph."
+                ),
+                tool_name=tool_name,
+                details={"argument": "input"},
+            )
+        from anatoolbox.provenance import run_id_of
+
+        return _corpus_or_input_error(name, tool_name), run_id_of(given)
+
     recordsets = getattr(context, "recordsets", None)
     if recordsets is None:
         raise ToolInputError(
             code="missing_required_arguments",
             message=(
-                "No corpus given and no recordset memory available. "
-                "Pass corpus='<name>', or run ingest_corpus first."
+                "No corpus given. Pass corpus='<name>', or input=<the result of ingest_corpus "
+                "or chunk_articles_by_paragraph>; with recordset memory, a handle also works."
             ),
             tool_name=tool_name,
             details={"missing": ["corpus"]},
         )
-    requested = args.get("input")
-    record = recordsets.bind(
-        object_type="corpus",
-        tool_name=tool_name,
-        requested=requested.strip() if isinstance(requested, str) and requested.strip() else None,
-    )
+    requested = given.strip() if isinstance(given, str) and given.strip() else None
+    record = recordsets.bind(object_type="corpus", tool_name=tool_name, requested=requested)
     name = str(record.ref.get("corpus") or record.args.get("corpus") or "")
     return _corpus_or_input_error(name, tool_name), record.handle
 
@@ -535,3 +556,54 @@ def _corpus_or_input_error(name: str, tool_name: str) -> LocalCorpus:
             tool_name=tool_name,
             details={"corpus": name},
         ) from exc
+
+
+def passages_with_text(
+    passages: Any, corpus_name: str | None, *, tool_name: str
+) -> list[dict[str, Any]]:
+    """Passages as given, with full ``text`` looked up from their corpus where it is missing.
+
+    Retrieval and reranking results carry short snippets rather than full texts,
+    so results stay small. A tool that needs the full text is told the corpus the
+    passages came from — in a pipeline, the upstream result's ``corpus`` field —
+    and reads each text from it by id.
+    """
+    from anatoolbox.errors import ToolInputError
+
+    usage = (
+        "passages must be a list of objects with 'id' and 'text' — or with 'id' alone when "
+        "their corpus is known (pass corpus='<name>' or input=<the result that produced them>)."
+    )
+    if not isinstance(passages, list) or not all(
+        isinstance(p, dict) and "id" in p for p in passages
+    ):
+        raise ToolInputError(
+            code="invalid_argument_value",
+            message=usage,
+            tool_name=tool_name,
+            details={"argument": "passages"},
+        )
+    missing = [str(p["id"]) for p in passages if "text" not in p]
+    if missing and not corpus_name:
+        raise ToolInputError(
+            code="invalid_argument_value",
+            message=usage,
+            tool_name=tool_name,
+            details={"argument": "passages", "without_text": missing[:10]},
+        )
+    texts: dict[str, str] = {}
+    if missing:
+        corpus = _corpus_or_input_error(corpus_name, tool_name)
+        texts = {str(row.get(corpus.id_field)): corpus.text_of(row) for row in corpus.get(missing)}
+        unknown = [passage_id for passage_id in missing if passage_id not in texts]
+        if unknown:
+            raise ToolInputError(
+                code="unknown_ids",
+                message=f"{len(unknown)} passage id(s) are not in corpus {corpus_name!r}: {unknown[:5]}",
+                tool_name=tool_name,
+                details={"corpus": corpus_name, "unknown_ids": unknown[:20]},
+            )
+    return [
+        {**p, "id": str(p["id"]), "text": str(p["text"]) if "text" in p else texts[str(p["id"])]}
+        for p in passages
+    ]

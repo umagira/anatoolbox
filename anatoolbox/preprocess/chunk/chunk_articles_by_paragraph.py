@@ -54,6 +54,7 @@ from anatoolbox.corpus import (
 )
 from anatoolbox.errors import ToolInputError
 from anatoolbox.preprocess.chunk.base import PREFIX, STAGE
+from anatoolbox.provenance import make_provenance
 
 TOOL_NAME = "chunk_articles_by_paragraph"
 OBJECT_TYPE = "corpus"
@@ -299,7 +300,9 @@ class ChunkArticlesByParagraphTool:
             )
         with_header = args.get("context_header") is True
 
-        source, source_handle = bind_corpus(args, context, tool_name=TOOL_NAME)
+        source, source_ref = bind_corpus(args, context, tool_name=TOOL_NAME)
+        # A handle belongs in recordset lineage; a result object's run id does not.
+        source_handle = None if isinstance(args.get("input"), dict) else source_ref
         name = str(args.get("name") or "").strip() or f"{source.name}_paragraph_chunks"
         if name == source.name:
             raise ToolInputError(
@@ -385,6 +388,11 @@ class ChunkArticlesByParagraphTool:
                 "max": max(sizes),
             },
             "settings": settings,
+            "provenance": make_provenance(
+                TOOL_NAME,
+                settings={"source_corpus": source.name, "corpus": chunks.name, **settings},
+                derived_from=[source_ref],
+            ),
         }
 
     def _remember(self, context, chunks, source, source_handle, settings) -> str | None:

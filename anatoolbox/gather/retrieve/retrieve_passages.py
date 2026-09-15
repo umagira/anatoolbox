@@ -22,6 +22,11 @@ the corpus, so a historical corpus is not penalized just for being old.
 ``queries`` adds rewrites of the question (see ``rewrite_query_for_retrieval``):
 each query is ranked on its own and the rankings are fused with reciprocal
 rank fusion, so a document relevant to any phrasing can surface.
+
+In a pipeline, pass results rather than handles: ``input`` may be the result of
+``chunk_articles_by_paragraph`` or ``ingest_corpus``, and ``queries_input`` the
+result of ``rewrite_query_for_retrieval``. Their run ids go into this result's
+provenance.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from anatoolbox.base import ToolContext, ToolSchema
 from anatoolbox.corpus import bind_corpus, ensure_bm25, ensure_embeddings, get_embedder, local_ref
 from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.retrieve.base import PREFIX, STAGE
+from anatoolbox.provenance import make_provenance, run_id_of
 from anatoolbox.retrieval import STRATEGIES, rank_records, reciprocal_rank_fusion
 
 TOOL_NAME = "retrieve_passages"
@@ -166,15 +172,36 @@ class RetrievePassagesTool:
         filters = _parse_filters(args.get("filters"))
         extra_queries = _parse_queries(args.get("queries"))
         queries_handle = None
+        queries_ref = None
         requested_queries = args.get("queries_input")
-        if isinstance(requested_queries, str) and requested_queries.strip():
+        if isinstance(requested_queries, dict):
+            stored = [
+                str(text).strip()
+                for text in requested_queries.get("query_texts") or []
+                if str(text).strip()
+            ]
+            if not stored:
+                raise ToolInputError(
+                    code="invalid_argument_value",
+                    message=(
+                        "queries_input must be a queries handle or the result of "
+                        "rewrite_query_for_retrieval."
+                    ),
+                    tool_name=TOOL_NAME,
+                    details={"argument": "queries_input"},
+                )
+            extra_queries = [*extra_queries, *stored]
+            queries_ref = run_id_of(requested_queries)
+        elif isinstance(requested_queries, str) and requested_queries.strip():
             stored, queries_handle = self._stored_queries(
                 requested_queries.strip(), context=context
             )
             extra_queries = [*extra_queries, *stored]
+            queries_ref = queries_handle
         all_queries = _unique_queries([query.strip(), *extra_queries])
 
-        corpus, source_handle = self._resolve_corpus(args, context=context)
+        corpus, source_ref = self._resolve_corpus(args, context=context)
+        source_handle = None if isinstance(args.get("input"), dict) else source_ref
         records = corpus.records
         texts = corpus.texts()
 
@@ -264,6 +291,23 @@ class RetrievePassagesTool:
                 )
                 if result[key]
             },
+        )
+        result["provenance"] = make_provenance(
+            TOOL_NAME,
+            settings={
+                "query": result["query"],
+                "strategy": strategy,
+                "size": size,
+                "corpus": corpus.name,
+                "queries": result["queries"],
+                "date_field": date_field,
+                "date_from": result["date_from"],
+                "date_to": result["date_to"],
+                "filters": result["filters"],
+                "recency_half_life_days": half_life,
+                "recency_reference_date": result["recency_reference_date"],
+            },
+            derived_from=[source_ref, queries_ref],
         )
         return result
 

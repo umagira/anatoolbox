@@ -34,8 +34,11 @@ class ToolSchema:
 
 @dataclass
 class ToolContext:
-    project: str
-    session_id: str
+    #: Routes project-scoped resources such as per-project API keys. Pipelines and
+    #: notebooks can leave the default.
+    project: str = "default"
+    #: Correlates log lines within one conversation. Pipelines can leave it empty.
+    session_id: str = ""
     # Session-scoped working memory (agent wraps Session.working_state). Holds
     # small pointers/handles only — never large document bodies. Pipelines and
     # notebooks pass WorkingMemory() or None.

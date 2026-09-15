@@ -35,6 +35,7 @@ from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.rewrite.base import PREFIX, STAGE
 from anatoolbox.llm_client import call_llm_json, model_for
 from anatoolbox.memory import value_ref
+from anatoolbox.provenance import make_provenance
 
 TOOL_NAME = "rewrite_query_for_retrieval"
 OBJECT_TYPE = "queries"
@@ -275,6 +276,16 @@ class RewriteQueryForRetrievalTool:
             "model": model,
         }
         result["handle"] = self._remember(context, result, max_queries=max_queries)
+        result["provenance"] = make_provenance(
+            TOOL_NAME,
+            settings={
+                "question": question,
+                "strategy": strategy,
+                "max_queries": max_queries,
+                "collection": collection or None,
+                "model": model,
+            },
+        )
         return result
 
     def _remember(

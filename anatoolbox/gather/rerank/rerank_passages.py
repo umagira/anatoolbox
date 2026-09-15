@@ -25,10 +25,11 @@ import json
 from typing import Any, ClassVar
 
 from anatoolbox.base import ToolContext, ToolSchema
-from anatoolbox.corpus import get_corpus, local_ref
+from anatoolbox.corpus import get_corpus, local_ref, passages_with_text
 from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.rerank.base import PREFIX, STAGE
 from anatoolbox.memory import value_ref
+from anatoolbox.provenance import make_provenance, run_id_of
 from anatoolbox.reranking import rerank_texts, reranker_label
 
 TOOL_NAME = "rerank_passages"
@@ -116,7 +117,7 @@ class RerankPassagesTool:
         max_per_source = (
             None if args.get("max_per_source") is None else _positive_int(args, "max_per_source", 1)
         )
-        candidates, corpus_name, candidate_handle, candidate_query = self._candidates(
+        candidates, corpus_name, candidate_handle, candidate_query, upstream_ref = self._candidates(
             args, context=context
         )
 
@@ -175,48 +176,80 @@ class RerankPassagesTool:
             "passages": passages,
             "input_handle": candidate_handle,
         }
+        settings = {
+            "query": query,
+            "keep": keep,
+            "max_per_source": max_per_source,
+            "max_chars": max_chars,
+            "reranker": label,
+            "candidates": len(candidates),
+        }
         result["handle"] = self._remember(
             context,
             passages=passages,
             corpus_name=corpus_name,
             candidate_handle=candidate_handle,
-            settings={
-                "query": query,
-                "keep": keep,
-                "max_per_source": max_per_source,
-                "max_chars": max_chars,
-                "reranker": label,
-                "candidates": len(candidates),
-            },
+            settings=settings,
+        )
+        result["provenance"] = make_provenance(
+            TOOL_NAME, settings={**settings, "corpus": corpus_name}, derived_from=[upstream_ref]
         )
         return result
 
     def _candidates(self, args: dict[str, Any], *, context: ToolContext):
-        """Explicit ``passages`` win; otherwise bind a stored passages recordset.
+        """Where the candidates come from, in precedence order.
 
-        Returns ``(candidates, corpus_name, handle, query)``, where candidates
-        are ``(id, full_text, metadata)`` in their original retrieval order.
+        1. ``passages`` — explicit passages (full text, or ids plus ``corpus``).
+        2. ``input`` as a result object — the result of ``retrieve_passages``
+           (pipelines): its passages, corpus and query. Full texts are read from
+           the corpus, because results carry only snippets.
+        3. ``input`` as a handle, or nothing — a stored passages recordset (agents).
+
+        Returns ``(candidates, corpus_name, handle, query, upstream_ref)``, where
+        candidates are ``(id, full_text, metadata)`` in their original order and
+        ``upstream_ref`` is a run id or handle for provenance.
         """
+        given = args.get("input")
         explicit = args.get("passages")
-        if explicit is not None:
-            if not isinstance(explicit, list) or not all(
-                isinstance(p, dict) and "id" in p and "text" in p for p in explicit
-            ):
+        query_hint = None
+        upstream = None
+        if isinstance(given, dict):
+            if explicit is None:
+                explicit = given.get("passages")
+            if explicit is None:
                 raise ToolInputError(
                     code="invalid_argument_value",
-                    message="passages must be a list of objects with 'id' and 'text'.",
+                    message=(
+                        "`input` must be a passages handle or a result with 'passages', "
+                        "such as the result of retrieve_passages."
+                    ),
                     tool_name=TOOL_NAME,
-                    details={"argument": "passages"},
+                    details={"argument": "input"},
                 )
-            dropped = ("text", "snippet", "rank", "score")
+            query_hint = given.get("query")
+            upstream = run_id_of(given)
+        if explicit is not None:
+            given_corpus = given.get("corpus") if isinstance(given, dict) else ""
+            corpus_hint = str(args.get("corpus") or given_corpus or "").strip() or None
+            passages = passages_with_text(explicit, corpus_hint, tool_name=TOOL_NAME)
+            dropped = (
+                "text",
+                "snippet",
+                "rank",
+                "score",
+                "rerank_score",
+                "retrieval_rank",
+                "rank_change",
+            )
             return (
                 [
-                    (str(p["id"]), str(p["text"]), {k: v for k, v in p.items() if k not in dropped})
-                    for p in explicit
+                    (p["id"], p["text"], {k: v for k, v in p.items() if k not in dropped})
+                    for p in passages
                 ],
+                corpus_hint,
                 None,
-                None,
-                None,
+                query_hint,
+                upstream,
             )
 
         if context.recordsets is None:
@@ -252,7 +285,7 @@ class RerankPassagesTool:
             )
             for row in corpus.get(record.ref.get("ids") or [])
         ]
-        return candidates, corpus_name, record.handle, record.args.get("query")
+        return candidates, corpus_name, record.handle, record.args.get("query"), record.handle
 
     def _remember(
         self, context, *, passages, corpus_name, candidate_handle, settings

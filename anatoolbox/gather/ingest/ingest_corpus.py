@@ -15,6 +15,7 @@ a 200k-document corpus costs the same in memory as a 200-document one.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, ClassVar
 
 from anatoolbox.base import ToolContext, ToolSchema
@@ -27,6 +28,7 @@ from anatoolbox.corpus import (
 )
 from anatoolbox.errors import ToolInputError
 from anatoolbox.gather.ingest.base import PREFIX, STAGE
+from anatoolbox.provenance import make_provenance
 
 TOOL_NAME = "ingest_corpus"
 OBJECT_TYPE = "corpus"
@@ -119,7 +121,21 @@ class IngestCorpusTool:
 
         register_corpus(corpus)
         described = corpus.describe()
+        described["corpus"] = corpus.name
         described["handle"] = self._remember(context, corpus)
+        described["provenance"] = make_provenance(
+            TOOL_NAME,
+            settings={
+                # The file name, not its path: provenance is meant to be shared.
+                "source_file": Path(path.strip()).name,
+                "name": corpus.name,
+                "id_field": corpus.id_field,
+                "text_field": corpus.text_field,
+                "limit": args.get("limit"),
+                "parse_lists": args.get("parse_lists", True) is not False,
+                "records": len(corpus),
+            },
+        )
         return described
 
     def _remember(self, context: ToolContext, corpus: LocalCorpus) -> str | None:

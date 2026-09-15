@@ -42,11 +42,12 @@ import re
 from typing import Any, ClassVar
 
 from anatoolbox.base import ToolContext, ToolSchema
-from anatoolbox.corpus import get_corpus
+from anatoolbox.corpus import get_corpus, passages_with_text
 from anatoolbox.enrich.synthesize.base import PREFIX, STAGE
 from anatoolbox.errors import ToolInputError
 from anatoolbox.llm_client import call_llm_text, model_for
 from anatoolbox.memory import value_ref
+from anatoolbox.provenance import make_provenance, run_id_of
 from anatoolbox.render import MARKDOWN_RENDER_TYPE
 
 TOOL_NAME = "synthesize_answer"
@@ -351,7 +352,7 @@ class SynthesizeAnswerTool:
         max_per_source = _positive_int(args, "max_per_source", None)
         instructions = str(args.get("instructions") or "").strip() or None
 
-        passages, input_handle = self._passages(args, context=context)
+        passages, input_handle, upstream_ref = self._passages(args, context=context)
         sources, duplicates, over_limit = curate(
             passages,
             max_passages=max_passages,
@@ -407,22 +408,56 @@ class SynthesizeAnswerTool:
             "input_handle": input_handle,
         }
         result["handle"] = self._remember(context, result, max_passages=max_passages)
+        result["provenance"] = make_provenance(
+            TOOL_NAME,
+            settings={
+                "question": question,
+                "mode": mode,
+                "order": order,
+                "model": model,
+                "max_passages": max_passages,
+                "max_chars_per_passage": max_chars,
+                "max_per_source": max_per_source,
+                "max_tokens": max_tokens,
+                "instructions": instructions,
+            },
+            derived_from=[upstream_ref],
+        )
         return result
 
     def _passages(self, args: dict[str, Any], *, context: ToolContext):
-        """Explicit ``passages`` win; otherwise bind a stored passages recordset (full texts)."""
+        """Where the passages come from, in precedence order.
+
+        1. ``passages`` — explicit passages (full text, or ids plus ``corpus``).
+        2. ``input`` as a result object — the result of ``retrieve_passages`` or
+           ``rerank_passages`` (pipelines). Full texts are read from the corpus
+           the result names, because results carry only snippets.
+        3. ``input`` as a handle, or nothing — a stored passages recordset (agents).
+
+        Returns ``(passages, handle, upstream_ref)``; ``upstream_ref`` is a run id
+        or handle for provenance.
+        """
+        given = args.get("input")
         explicit = args.get("passages")
-        if explicit is not None:
-            if not isinstance(explicit, list) or not all(
-                isinstance(p, dict) and "id" in p and "text" in p for p in explicit
-            ):
+        upstream = None
+        if isinstance(given, dict):
+            if explicit is None:
+                explicit = given.get("passages")
+            if explicit is None:
                 raise ToolInputError(
                     code="invalid_argument_value",
-                    message="passages must be a list of objects with 'id' and 'text'.",
+                    message=(
+                        "`input` must be a passages handle or a result with 'passages', "
+                        "such as the result of retrieve_passages or rerank_passages."
+                    ),
                     tool_name=TOOL_NAME,
-                    details={"argument": "passages"},
+                    details={"argument": "input"},
                 )
-            return [{**p, "id": str(p["id"]), "text": str(p["text"])} for p in explicit], None
+            upstream = run_id_of(given)
+        if explicit is not None:
+            given_corpus = given.get("corpus") if isinstance(given, dict) else ""
+            corpus_hint = str(args.get("corpus") or given_corpus or "").strip() or None
+            return passages_with_text(explicit, corpus_hint, tool_name=TOOL_NAME), None, upstream
 
         if context.recordsets is None:
             raise ToolInputError(
@@ -462,7 +497,7 @@ class SynthesizeAnswerTool:
                     "text": corpus.text_of(row),
                 }
             )
-        return passages, record.handle
+        return passages, record.handle, record.handle
 
     def _remember(
         self, context: ToolContext, result: dict[str, Any], *, max_passages: int

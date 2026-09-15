@@ -15,6 +15,7 @@ This package ships contracts, not a tool catalog. Instantiate a prefix for
 your own objects and register it — see ``anatoolbox.registry``.
 """
 
+from anatoolbox._version import __version__
 from anatoolbox.base import Tool, ToolContext, ToolProgress, ToolSchema
 from anatoolbox.registry import (
     REGISTRIES,
@@ -34,8 +35,6 @@ from anatoolbox.stages import (
     prefixes_for_stage,
     stage_for_tool_name,
 )
-
-__version__ = "0.1.0"
 
 __all__ = [
     "REGISTRIES",
