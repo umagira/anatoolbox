@@ -16,7 +16,7 @@ word windows with overlap, or on semantic boundaries.
 Naming: concrete tools are ``chunk_<object>[_by_<dimension>][_for_<purpose>]``.
 
 Example names:
-- ``chunk_articles_by_paragraph``
+- ``chunk_by_size``
 - ``chunk_passages_by_token_window``
 - ``chunk_reports_for_rag``
 """

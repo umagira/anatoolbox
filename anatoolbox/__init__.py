@@ -73,13 +73,11 @@ def register_reference_tools(*, registry: str = "default", replace: bool = False
     from anatoolbox.gather.rewrite.rewrite_query_for_retrieval import (
         RewriteQueryForRetrievalTool,
     )
-    from anatoolbox.preprocess.chunk.chunk_articles_by_paragraph import (
-        ChunkArticlesByParagraphTool,
-    )
+    from anatoolbox.preprocess.chunk.chunk_by_size import ChunkBySizeTool
 
     tools = [
         IngestCorpusTool(),
-        ChunkArticlesByParagraphTool(),
+        ChunkBySizeTool(),
         RewriteQueryForRetrievalTool(),
         RetrievePassagesTool(),
         RerankPassagesTool(),

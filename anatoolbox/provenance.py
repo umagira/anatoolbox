@@ -8,7 +8,7 @@ Every ``run()`` result carries a ``provenance`` block::
         "anatoolbox_version": "0.1.0",
         "created_at": "2026-09-15T08:12:03+00:00",
         "settings": {"query": "...", "strategy": "sparse", "size": 30, ...},
-        "derived_from": ["chunk_articles_by_paragraph-1b2c3d4e"],
+        "derived_from": ["chunk_by_size-1b2c3d4e"],
     }
 
 ``settings`` are the effective arguments, defaults included, so a result can be

@@ -87,7 +87,7 @@ def test_stage_for_tool_name_uses_the_prefix():
     assert stage_for_tool_name("clean_boilerplate") == "preprocess"
     assert stage_for_tool_name("parse_pdf_report") == "preprocess"
     assert stage_for_tool_name("deduplicate_articles") == "preprocess"
-    assert stage_for_tool_name("chunk_articles_by_paragraph") == "preprocess"
+    assert stage_for_tool_name("chunk_by_size") == "preprocess"
     assert stage_for_tool_name("extract_entities") == "extract"
     assert stage_for_tool_name("aggregate_mentions_by_period") == "analyze"
     assert stage_for_tool_name("synthesize_answer") == "enrich"

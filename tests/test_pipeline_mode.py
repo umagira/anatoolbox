@@ -16,7 +16,7 @@ from anatoolbox.gather.rewrite.rewrite_query_for_retrieval import RewriteQueryFo
 from anatoolbox.memory.facade import Memory
 from anatoolbox.memory.policy import DefaultMemoryPolicy
 from anatoolbox.memory.store import InMemoryRecordsetStore
-from anatoolbox.preprocess.chunk.chunk_articles_by_paragraph import ChunkArticlesByParagraphTool
+from anatoolbox.preprocess.chunk.chunk_by_size import ChunkBySizeTool
 from anatoolbox.reranking import configure_reranker
 
 QUESTION = "How do browser agents use the protocol"
@@ -97,9 +97,7 @@ def test_the_whole_loop_chains_by_passing_results(news_csv, fake_llm):
     fake_llm.replies = [rewrite_reply("browser agents protocol"), ["Agents speak a protocol [S1]."]]
 
     articles = IngestCorpusTool().run({"path": str(news_csv), "text_field": "content"}, context=ctx)
-    chunks = ChunkArticlesByParagraphTool().run(
-        {"input": articles, "target_words": 5, "max_words": 50, "min_words": 1}, context=ctx
-    )
+    chunks = ChunkBySizeTool().run({"input": articles, "size": 5}, context=ctx)
     rewrites = RewriteQueryForRetrievalTool().run({"question": QUESTION}, context=ctx)
     retrieved = RetrievePassagesTool().run(
         {"query": QUESTION, "input": chunks, "queries_input": rewrites, "size": 5}, context=ctx
@@ -169,7 +167,7 @@ def test_unknown_ids_are_named(long_docs):
 
 def test_an_input_that_is_not_a_usable_result_is_explained(long_docs):
     with pytest.raises(ToolInputError, match="names its corpus"):
-        ChunkArticlesByParagraphTool().run({"input": {"something": 1}}, context=ToolContext())
+        ChunkBySizeTool().run({"input": {"something": 1}}, context=ToolContext())
     with pytest.raises(ToolInputError, match="result with 'passages'"):
         RerankPassagesTool().run({"query": "q", "input": {"something": 1}}, context=ToolContext())
     with pytest.raises(ToolInputError, match="rewrite_query_for_retrieval"):
@@ -203,9 +201,7 @@ class TestProvenance:
         articles = IngestCorpusTool().run(
             {"path": str(news_csv), "text_field": "content"}, context=ctx
         )
-        chunks = ChunkArticlesByParagraphTool().run(
-            {"input": articles, "min_words": 1, "target_words": 5}, context=ctx
-        )
+        chunks = ChunkBySizeTool().run({"input": articles, "size": 5}, context=ctx)
         rewrites = RewriteQueryForRetrievalTool().run({"question": "browser agents"}, context=ctx)
         retrieved = RetrievePassagesTool().run(
             {"query": "browser agents", "input": chunks}, context=ctx
@@ -214,7 +210,7 @@ class TestProvenance:
         answer = SynthesizeAnswerTool().run({"question": "q", "input": reranked}, context=ctx)
         for result, tool in [
             (articles, "ingest_corpus"),
-            (chunks, "chunk_articles_by_paragraph"),
+            (chunks, "chunk_by_size"),
             (rewrites, "rewrite_query_for_retrieval"),
             (retrieved, "retrieve_passages"),
             (reranked, "rerank_passages"),

@@ -496,7 +496,7 @@ def bind_corpus(
 
     1. ``corpus`` — an explicit corpus name. Nothing upstream is recorded.
     2. ``input`` as a result object (pipelines and notebooks) — the result of
-       ``ingest_corpus`` or ``chunk_articles_by_paragraph``, which names its
+       ``ingest_corpus`` or ``chunk_by_size``, which names its
        ``corpus``. Returns that result's ``run_id``.
     3. ``input`` as a handle, or no input at all (agents with recordset memory)
        — binds the named recordset, or else the newest ``corpus`` recordset.
@@ -518,7 +518,7 @@ def bind_corpus(
                 code="invalid_argument_value",
                 message=(
                     "`input` must be a corpus handle or a result that names its corpus, "
-                    "such as the result of ingest_corpus or chunk_articles_by_paragraph."
+                    "such as the result of ingest_corpus or chunk_by_size."
                 ),
                 tool_name=tool_name,
                 details={"argument": "input"},
@@ -533,7 +533,7 @@ def bind_corpus(
             code="missing_required_arguments",
             message=(
                 "No corpus given. Pass corpus='<name>', or input=<the result of ingest_corpus "
-                "or chunk_articles_by_paragraph>; with recordset memory, a handle also works."
+                "or chunk_by_size>; with recordset memory, a handle also works."
             ),
             tool_name=tool_name,
             details={"missing": ["corpus"]},

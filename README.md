@@ -111,14 +111,14 @@ from anatoolbox import ToolContext, resolve_tools
 
 anatoolbox.register_reference_tools()
 ingest, chunk, rewrite, retrieve, rerank, synthesize = resolve_tools(
-    ["ingest_corpus", "chunk_articles_by_paragraph", "rewrite_query_for_retrieval",
+    ["ingest_corpus", "chunk_by_size", "rewrite_query_for_retrieval",
      "retrieve_passages", "rerank_passages", "synthesize_answer"]
 )
 ctx = ToolContext()  # a notebook or batch pipeline: no memory needed
 question = "Which standards for AI agents emerged, and who backs them?"
 
 articles = ingest.run({"path": "ai_media.csv", "text_field": "content"}, context=ctx)
-chunks = chunk.run({"input": articles, "target_words": 150}, context=ctx)
+chunks = chunk.run({"input": articles, "size": 200, "overlap": 40}, context=ctx)
 queries = rewrite.run({"question": question, "strategy": "decompose"}, context=ctx)
 candidates = retrieve.run(
     {"query": question, "input": chunks, "queries_input": queries, "strategy": "hybrid", "size": 30},
@@ -203,7 +203,7 @@ embedding models, not basic functionality.
 | Registry / plugin entry points | ✅ complete |
 | Local corpus backend (CSV/JSON/JSONL/Parquet) | ✅ complete |
 | Retrieval: BM25 / dense / hybrid | ✅ complete |
-| Reference instantiations | 🚧 `ingest_corpus`, `chunk_articles_by_paragraph`, `rewrite_query_for_retrieval`, `retrieve_passages`, `rerank_passages`, `synthesize_answer` |
+| Reference instantiations | 🚧 `ingest_corpus`, `chunk_by_size`, `rewrite_query_for_retrieval`, `retrieve_passages`, `rerank_passages`, `synthesize_answer` |
 | Any OpenAI-compatible LLM endpoint | ✅ complete |
 | Answer synthesis with checked citations | ✅ `synthesize_answer` |
 | Evaluation tools | ❌ not yet |

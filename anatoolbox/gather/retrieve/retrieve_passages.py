@@ -24,7 +24,7 @@ each query is ranked on its own and the rankings are fused with reciprocal
 rank fusion, so a document relevant to any phrasing can surface.
 
 In a pipeline, pass results rather than handles: ``input`` may be the result of
-``chunk_articles_by_paragraph`` or ``ingest_corpus``, and ``queries_input`` the
+``chunk_by_size`` or ``ingest_corpus``, and ``queries_input`` the
 result of ``rewrite_query_for_retrieval``. Their run ids go into this result's
 provenance.
 """
