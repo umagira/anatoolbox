@@ -66,8 +66,14 @@ def register_reference_tools(*, registry: str = "default", replace: bool = False
     expected to consume — see the README. Importing anatoolbox registers
     nothing on its own; call this when you want them.
     """
+    from anatoolbox.analyze.calculate.calculate_retrieval_metrics import (
+        CalculateRetrievalMetricsTool,
+    )
+    from anatoolbox.analyze.score.score_rag_answer import ScoreRagAnswerTool
     from anatoolbox.enrich.synthesize.synthesize_answer import SynthesizeAnswerTool
+    from anatoolbox.extract.extract.extract_test_questions import ExtractTestQuestionsTool
     from anatoolbox.gather.ingest.ingest_corpus import IngestCorpusTool
+    from anatoolbox.gather.ingest.ingest_knowledge_graph import IngestKnowledgeGraphTool
     from anatoolbox.gather.rerank.rerank_passages import RerankPassagesTool
     from anatoolbox.gather.retrieve.retrieve_passages import RetrievePassagesTool
     from anatoolbox.gather.rewrite.rewrite_query_for_retrieval import (
@@ -77,11 +83,15 @@ def register_reference_tools(*, registry: str = "default", replace: bool = False
 
     tools = [
         IngestCorpusTool(),
+        IngestKnowledgeGraphTool(),
         ChunkBySizeTool(),
         RewriteQueryForRetrievalTool(),
         RetrievePassagesTool(),
         RerankPassagesTool(),
         SynthesizeAnswerTool(),
+        ExtractTestQuestionsTool(),
+        CalculateRetrievalMetricsTool(),
+        ScoreRagAnswerTool(),
     ]
     return [register_tool(t, registry=registry, replace=replace).schema.name for t in tools]
 

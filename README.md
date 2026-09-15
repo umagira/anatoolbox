@@ -34,7 +34,7 @@ belongs in the frontend: a tool can declare how its result may be displayed
 Each prefix ships a **contract**: abstract input, abstract output, a
 one-sentence transformation, and a `Protocol`. A concrete tool is named
 `<prefix><object>[_by_<dimension>][_for_<purpose>]` — `aggregate_mentions_by_period`,
-`retrieve_passages`, `score_rag_answers`.
+`retrieve_passages`, `score_rag_answer`.
 
 This is not decoration. An agent that knows a step is a `validate_` step knows
 what it may consume and what it must produce, without being told about
@@ -55,7 +55,7 @@ handle = context.recordsets.remember(
 ).handle
 # -> "passages_1"
 
-record = context.recordsets.bind(object_type="passages", tool_name="score_rag_answers")
+record = context.recordsets.bind(object_type="passages", tool_name="score_rag_answer")
 rows = context.recordsets.records(record)  # fetched by reference, on demand
 ```
 
@@ -66,40 +66,64 @@ digest, or working memory — only pointers do.
 
 ## The shape of a tool
 
-Every tool is dual-use. `run` is the pipeline/notebook API; `execute` is the
-agent path.
+Every tool is dual-use: `run` returns data for pipelines and notebooks, `execute` returns a
+JSON string for an agent. Subclass `BaseTool` and it builds the schema, argument checks,
+provenance and `execute` from a few class attributes, so a tool is mostly its `run`:
 
 ```python
-from anatoolbox import ToolSchema, ToolContext, register_tool, resolve_tools
+from collections import Counter
+
+from anatoolbox import register_tool
+from anatoolbox.analyze.aggregate.base import PREFIX, STAGE
+from anatoolbox.provenance import run_id_of
+from anatoolbox.tool import BaseTool
 
 
-class AggregateMentionsByPeriodTool:
-    schema = ToolSchema(
-        name="aggregate_mentions_by_period",
-        description="Group mention counts into calendar periods.",
-        input_schema={
-            "type": "object",
-            "properties": {"grain": {"type": "string"}},
-            "required": ["grain"],
-        },
-    )
+class AggregateArticlesByMonthTool(BaseTool):
+    tool_name = "aggregate_articles_by_month"
+    prefix, stage = PREFIX, STAGE
+    description = "Count retrieved articles per publication month."
+    input_schema = {
+        "type": "object",
+        "properties": {"input": {"type": "object", "description": "A retrieve_passages result."}},
+        "required": ["input"],
+    }
 
-    def run(self, args, *, context) -> dict:
-        return {"periods": [...]}
+    def run(self, args, *, context):
+        retrieved = args["input"]
+        months = Counter(str(p.get("date", ""))[:7] for p in retrieved["passages"])
+        return {
+            "months": dict(sorted(months.items())),
+            "provenance": self.provenance({}, derived_from=[run_id_of(retrieved)]),
+        }
 
-    def execute(self, args, *, context) -> str:
-        import json
 
-        return json.dumps(self.run(args, context=context))
-
-
-register_tool(AggregateMentionsByPeriodTool())
-(tool,) = resolve_tools(["aggregate_mentions_by_period"])
-tool.run({"grain": "month"}, context=ToolContext(project="demo", session_id="s1"))
+register_tool(AggregateArticlesByMonthTool())
 ```
 
-That is the whole extension story. `anatoolbox` ships **contracts, not a tool
-catalog** — you instantiate prefixes for your own corpus.
+`anatoolbox` ships **contracts, not a tool catalog** — you instantiate prefixes for your own
+corpus. The tools that do ship are baselines.
+
+## Change a shipped tool
+
+Each shipped tool keeps its plumbing in `run()` and exposes the step a variant changes as a
+hook method. Subclass, rename, override one hook — input binding, pipeline chaining and
+provenance are inherited:
+
+```python
+import re
+from anatoolbox.preprocess.chunk.chunk_by_size import ChunkBySizeTool
+
+
+class ChunkBySentence(ChunkBySizeTool):
+    tool_name = "chunk_by_sentence"
+
+    def split(self, text, settings):
+        return [{"text": s} for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+```
+
+[`docs/extending.md`](docs/extending.md) lists every hook, how to add arguments, and when to
+plug in a function or write a new tool instead.
 
 ## Run it on a file
 
@@ -136,6 +160,46 @@ answer["provenance"]["derived_from"]  # -> [top["provenance"]["run_id"]]
 rank fusion of the two) — so comparing retrieval strategies is a changed
 argument, not a changed pipeline.
 
+## Evaluate it
+
+```python
+draft, metrics, judge = resolve_tools(
+    ["extract_test_questions", "calculate_retrieval_metrics", "score_rag_answer"]
+)
+
+test_set = draft.run({"input": chunks, "sample_size": 100, "questions_per_record": 2}, context=ctx)
+# review the questions by hand before using them
+
+runs = [
+    {"question": q["question"], "relevant": q["source_ids"],
+     "retrieved": retrieve.run({"query": q["question"], "input": chunks}, context=ctx)}
+    for q in test_set["questions"]
+]
+metrics.run({"results": runs, "k": [1, 5, 10]}, context=ctx)["summary"]   # precision, recall, hit, MRR
+
+judge.run({"answer": answer, "reference_answer": test_set["questions"][0]["reference_answer"]}, context=ctx)
+# -> faithfulness, relevance, context and temporal grounding, correctness; unsupported claims; review flags
+```
+
+Questions carry a type (factual, temporal, relational, analytical, comparative), so results
+can be compared per category. Metrics count chunks as their article, once.
+
+## Knowledge graphs
+
+`anatoolbox` does not build knowledge graphs — it loads the one you built. An edge table or
+NetworkX node-link JSON, one row per fact (`subject`, `relation`, `object`, optional types,
+`source_ids` and `date`), becomes a `KnowledgeGraph` with plain lookups:
+
+```python
+from anatoolbox.graph import get_graph
+
+loaded = resolve_tools(["ingest_knowledge_graph"])[0].run({"path": "graph_edges.csv"}, context=ctx)
+graph = get_graph(loaded["graph"])
+facts = graph.subgraph(graph.find_entities(question), hops=1, max_facts=15)
+answer = synthesize.run({"question": question, "input": top, "facts": facts}, context=ctx)
+# facts are cited as [G1]…[Gn] and checked like sources
+```
+
 ## Pipelines and agents
 
 The same tools run in two modes.
@@ -165,6 +229,9 @@ configure_llm(models={"fast": "qwen3:1.7b", "strong": "qwen3:14b"})   # differen
 
 Or set `ANATOOLBOX_LLM_BASE_URL`, `ANATOOLBOX_LLM_API_KEY` and `ANATOOLBOX_LLM_MODEL`.
 There is no default model: which model produced an answer is part of the answer.
+Query rewriting uses the `fast` role, answers the `strong` role, and test questions and
+judging the `evaluation` role — set it to a different model than the one that answers.
+Roles that are not configured fall back to the default model.
 Endpoints differ in what they accept, so parameters an endpoint rejects are dropped
 and remembered, and JSON requests fall back from strict schemas to JSON mode to
 prompt-only.
@@ -203,10 +270,12 @@ embedding models, not basic functionality.
 | Registry / plugin entry points | ✅ complete |
 | Local corpus backend (CSV/JSON/JSONL/Parquet) | ✅ complete |
 | Retrieval: BM25 / dense / hybrid | ✅ complete |
-| Reference instantiations | 🚧 `ingest_corpus`, `chunk_by_size`, `rewrite_query_for_retrieval`, `retrieve_passages`, `rerank_passages`, `synthesize_answer` |
+| Extending shipped tools by subclassing | ✅ `BaseTool` + hooks, see [`docs/extending.md`](docs/extending.md) |
+| Reference instantiations | 🚧 `ingest_corpus`, `ingest_knowledge_graph`, `chunk_by_size`, `rewrite_query_for_retrieval`, `retrieve_passages`, `rerank_passages`, `synthesize_answer` |
 | Any OpenAI-compatible LLM endpoint | ✅ complete |
-| Answer synthesis with checked citations | ✅ `synthesize_answer` |
-| Evaluation tools | ❌ not yet |
+| Answer synthesis with checked citations, incl. graph facts | ✅ `synthesize_answer` |
+| Evaluation | ✅ `extract_test_questions`, `calculate_retrieval_metrics`, `score_rag_answer` |
+| Knowledge graph loading and lookups | ✅ `anatoolbox.graph` |
 | Docs site | ❌ not yet |
 
 ## License

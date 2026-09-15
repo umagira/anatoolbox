@@ -30,6 +30,10 @@ What happens between retrieval and the model matters as much as either:
   ``max_per_source`` caps them.
 * **Dates in view.** Every source shows its publication date, and the
   instructions ask the model to use dates when the question concerns time.
+* **Graph facts.** ``facts`` adds facts from a knowledge graph (see
+  ``anatoolbox.graph``) as evidence labelled [G1]…[Gn], cited like sources
+  and checked the same way. Which facts to add — the graph-aware part of a
+  graph-enhanced RAG system — is up to the caller.
 
 The model comes from the ``strong`` role of ``anatoolbox.llm_client``, falling
 back to the default model; the model actually used is recorded with the answer.
@@ -49,6 +53,7 @@ from typing import Any, ClassVar
 from anatoolbox.base import ToolContext
 from anatoolbox.corpus import get_corpus, passages_with_text
 from anatoolbox.enrich.synthesize.base import PREFIX, STAGE
+from anatoolbox.graph import describe_fact
 from anatoolbox.llm_client import call_llm_text, model_for
 from anatoolbox.memory import value_ref
 from anatoolbox.provenance import run_id_of
@@ -64,16 +69,20 @@ DEFAULT_MODE = "grounded"
 DEFAULT_ORDER = "edges"
 DEFAULT_MAX_PASSAGES = 8
 DEFAULT_MAX_CHARS = 1500
+DEFAULT_MAX_FACTS = 20
 #: Source metadata shown next to each label, in this order.
 SOURCE_FIELDS = ("title", "date", "url")
+#: Graph fact fields reported with an answer.
+FACT_FIELDS = ("subject", "relation", "object", "subject_type", "object_type", "source_ids", "date")
 
-_CITATION_GROUP = re.compile(r"\[\s*(S\d+(?:\s*[,;]\s*S\d+)*)\s*\]")
-_LABEL = re.compile(r"S\d+")
+#: Answers cite sources [S1] and graph facts [G1], alone or grouped: [S1, G2].
+_CITATION_GROUP = re.compile(r"\[\s*([SG]\d+(?:\s*[,;]\s*[SG]\d+)*)\s*\]")
+_LABEL = re.compile(r"[SG]\d+")
 #: A sentence ends at . ! or ? — possibly followed by a closing quote or bracket.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|(?<=[.!?][\"”'’)\]])\s+")
 _WORD = re.compile(r"[^\W_]")
 #: A line that begins with a label is a reference-list entry, not a statement.
-_REFERENCE_ENTRY = re.compile(r"^(?:[-*]\s*)?\[\s*S\d+")
+_REFERENCE_ENTRY = re.compile(r"^(?:[-*]\s*)?\[\s*[SG]\d+")
 _SOURCE_LIST_HEADINGS = {"sources", "source", "references", "bibliography"}
 
 SYSTEM_PROMPT = """You answer questions using numbered sources from a document collection.
@@ -164,7 +173,11 @@ def curate(
 
 
 def build_user_prompt(
-    question: str, sources: list[dict[str, Any]], *, instructions: str | None = None
+    question: str,
+    sources: list[dict[str, Any]],
+    *,
+    instructions: str | None = None,
+    facts: list[dict[str, Any]] | tuple = (),
 ) -> str:
     blocks = []
     for source in sources:
@@ -172,12 +185,21 @@ def build_user_prompt(
         header = f"[{source['label']}] {meta}" if meta else f"[{source['label']}]"
         blocks.append(f"{header}\n{source['text']}")
     parts = [f"Question: {question}", "Sources:\n\n" + "\n\n".join(blocks)]
+    if facts:
+        parts.append(
+            "Graph facts from the knowledge graph:\n\n"
+            + "\n".join(f"[{fact['label']}] {describe_fact(fact)}" for fact in facts)
+        )
     if instructions:
         parts.append(f"Additional instructions: {instructions}")
     # Keep this plain. A format example here ('... like this: "This is what the
     # source says [S1]."') was tried, and Qwen3-0.6B copied the example sentence
     # verbatim into its answers, once per source.
-    parts.append("Answer the question, citing sources by label.")
+    parts.append(
+        "Answer the question, citing sources and graph facts by label."
+        if facts
+        else "Answer the question, citing sources by label."
+    )
     return "\n\n".join(parts)
 
 
@@ -282,6 +304,15 @@ _INPUT_SCHEMA: dict[str, Any] = {
             "description": "Model name; defaults to the configured strong role.",
         },
         "max_tokens": {"type": "integer", "minimum": 1},
+        "facts": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": (
+                "Optional graph facts to use as evidence, each with 'subject', 'relation' and "
+                "'object' (see anatoolbox.graph); labelled [G1]… and cited like sources."
+            ),
+        },
+        "max_facts": {"type": "integer", "minimum": 1, "default": DEFAULT_MAX_FACTS},
         "passages": {
             "type": "array",
             "items": {"type": "object"},
@@ -301,7 +332,8 @@ class SynthesizeAnswerTool(BaseTool):
     Hooks for a variant (override in a subclass with its own ``tool_name``):
 
     * ``curate(passages, settings)`` — choose, label and order the sources for the prompt.
-    * ``system_prompt(settings)`` / ``user_prompt(question, sources, settings)`` — the instructions.
+    * ``curate_facts(facts, settings)`` — choose and label graph facts for the prompt.
+    * ``system_prompt(settings)`` / ``user_prompt(question, sources, settings, facts)`` — the instructions.
     * ``generate(system, user, settings, context)`` — produce the answer text.
     * ``settings(args)`` — read and check arguments; add your own here.
     """
@@ -330,6 +362,7 @@ class SynthesizeAnswerTool(BaseTool):
             "max_passages": self.int_arg(args, "max_passages", DEFAULT_MAX_PASSAGES),
             "max_chars_per_passage": self.int_arg(args, "max_chars_per_passage", DEFAULT_MAX_CHARS),
             "max_per_source": self.int_arg(args, "max_per_source", None),
+            "max_facts": self.int_arg(args, "max_facts", DEFAULT_MAX_FACTS),
             "max_tokens": self.int_arg(args, "max_tokens", None),
             "instructions": self.text_arg(args, "instructions") or None,
             "model": self.text_arg(args, "model") or model_for(self.role),
@@ -352,13 +385,39 @@ class SynthesizeAnswerTool(BaseTool):
             max_per_source=settings["max_per_source"],
         )
 
+    def curate_facts(
+        self, facts: list[dict[str, Any]], settings: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Graph facts for the prompt, each with a ``label`` G1…Gn.
+
+        Default: drop repeated facts and keep the first ``max_facts`` in the order
+        given — so pass them most relevant first.
+        """
+        seen: set[str] = set()
+        kept = []
+        for fact in facts:
+            key = describe_fact(fact).casefold()
+            if key not in seen:
+                seen.add(key)
+                kept.append(fact)
+        return [
+            {**fact, "label": f"G{number}"}
+            for number, fact in enumerate(kept[: settings["max_facts"]], start=1)
+        ]
+
     def system_prompt(self, settings: dict[str, Any]) -> str:
         return SYSTEM_PROMPT.format(grounding=GROUNDING[settings["mode"]])
 
     def user_prompt(
-        self, question: str, sources: list[dict[str, Any]], settings: dict[str, Any]
+        self,
+        question: str,
+        sources: list[dict[str, Any]],
+        settings: dict[str, Any],
+        facts: list[dict[str, Any]] | tuple = (),
     ) -> str:
-        return build_user_prompt(question, sources, instructions=settings["instructions"])
+        return build_user_prompt(
+            question, sources, instructions=settings["instructions"], facts=facts
+        )
 
     def generate(
         self, system: str, user: str, settings: dict[str, Any], context: ToolContext
@@ -378,7 +437,7 @@ class SynthesizeAnswerTool(BaseTool):
     def run(self, args: dict[str, Any], *, context: ToolContext) -> dict[str, Any]:
         settings = self.settings(args)
         question = settings["question"]
-        passages, input_handle, upstream_ref = self._passages(args, context=context)
+        passages, input_handle, upstream_ref, corpus_name = self._passages(args, context=context)
         sources, duplicates, over_limit = self.curate(passages, settings)
         if not sources:
             raise self.input_error(
@@ -387,18 +446,23 @@ class SynthesizeAnswerTool(BaseTool):
                 input_handle=input_handle,
             )
 
-        answer = self.generate(
-            self.system_prompt(settings),
-            self.user_prompt(question, sources, settings),
-            settings,
-            context,
-        ).strip()
+        given_facts, facts_ref = self._facts(args)
+        facts = self.curate_facts(given_facts, settings)
+        # Without facts, call user_prompt as a text-only override written without them expects.
+        user = (
+            self.user_prompt(question, sources, settings, facts)
+            if facts
+            else self.user_prompt(question, sources, settings)
+        )
+        answer = self.generate(self.system_prompt(settings), user, settings, context).strip()
 
         by_label = {source["label"]: source for source in sources}
+        known = set(by_label) | {fact["label"] for fact in facts}
         cited = extract_citations(answer)
         by_rank = sorted(sources, key=lambda source: source["rank"])
         result = {
             "question": question,
+            "corpus": corpus_name,
             "max_per_source": settings["max_per_source"],
             "mode": settings["mode"],
             "order": settings["order"],
@@ -415,16 +479,20 @@ class SynthesizeAnswerTool(BaseTool):
                 }
                 for s in by_rank
             ],
-            "cited": [label for label in cited if label in by_label],
-            "unknown_citations": [label for label in cited if label not in by_label],
+            "facts": [{"label": f["label"], **{k: f.get(k) for k in FACT_FIELDS}} for f in facts],
+            "cited": [label for label in cited if label in known],
+            "unknown_citations": [label for label in cited if label not in known],
             "uncited_sources": [s["label"] for s in by_rank if s["label"] not in cited],
+            "uncited_facts": [f["label"] for f in facts if f["label"] not in cited],
             "dropped_duplicates": duplicates,
             "dropped_over_source_limit": over_limit,
             **citation_coverage(answer),
             "input_handle": input_handle,
         }
         result["handle"] = self._remember(context, result, max_passages=settings["max_passages"])
-        result["provenance"] = self.provenance(settings, derived_from=[upstream_ref])
+        result["provenance"] = self.provenance(
+            {**settings, "facts": len(facts)}, derived_from=[upstream_ref, facts_ref]
+        )
         return result
 
     def render(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -436,6 +504,26 @@ class SynthesizeAnswerTool(BaseTool):
         content = data["answer_markdown"] + "\n\n**Sources**\n\n" + "\n".join(lines)
         return {"render_type": MARKDOWN_RENDER_TYPE, "content": content}
 
+    def _facts(self, args: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+        """Graph facts from ``facts`` — a list, or a result carrying one — and that result's run id."""
+        given = args.get("facts")
+        if given is None:
+            return [], None
+        upstream = None
+        if isinstance(given, dict):
+            upstream = run_id_of(given)
+            given = given.get("facts")
+        core = ("subject", "relation", "object")
+        if not isinstance(given, list) or not all(
+            isinstance(f, dict) and all(str(f.get(k) or "").strip() for k in core) for f in given
+        ):
+            raise self.input_error(
+                "facts must be a list of graph facts with 'subject', 'relation' and 'object', "
+                "or a result with such a 'facts' list.",
+                argument="facts",
+            )
+        return given, upstream
+
     def _passages(self, args: dict[str, Any], *, context: ToolContext):
         """Where the passages come from, in precedence order.
 
@@ -445,8 +533,9 @@ class SynthesizeAnswerTool(BaseTool):
            the result names, because results carry only snippets.
         3. ``input`` as a handle, or nothing — a stored passages recordset (agents).
 
-        Returns ``(passages, handle, upstream_ref)``; ``upstream_ref`` is a run id
-        or handle for provenance.
+        Returns ``(passages, handle, upstream_ref, corpus_name)``; ``upstream_ref`` is a
+        run id or handle for provenance, ``corpus_name`` the corpus the texts came from
+        (None for explicit passages with their own text).
         """
         given = args.get("input")
         explicit = args.get("passages")
@@ -468,6 +557,7 @@ class SynthesizeAnswerTool(BaseTool):
                 passages_with_text(explicit, corpus_hint, tool_name=self.tool_name),
                 None,
                 upstream,
+                corpus_hint,
             )
 
         if context.recordsets is None:
@@ -507,7 +597,7 @@ class SynthesizeAnswerTool(BaseTool):
                     "text": corpus.text_of(row),
                 }
             )
-        return passages, record.handle, record.handle
+        return passages, record.handle, record.handle, corpus_name
 
     def _remember(
         self, context: ToolContext, result: dict[str, Any], *, max_passages: int
