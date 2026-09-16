@@ -22,4 +22,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check anatoolbox tests
       - run: ruff format --check anatoolbox tests
+      # Both invocations: only `python -m pytest` puts the current directory on
+      # sys.path, and that difference once hid a broken import from every local run.
       - run: pytest -q
+      - run: python -m pytest -q

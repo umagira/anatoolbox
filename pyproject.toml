@@ -71,3 +71,7 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The repo root on sys.path, so the suite behaves the same under `pytest` and
+# `python -m pytest`. Only the second adds the current directory by itself, which
+# hid a broken import in tests/test_registry.py until CI ran the first.
+pythonpath = ["."]

@@ -1,6 +1,7 @@
 """The registry is the package's extension point — it had no coverage before."""
 
 import pytest
+from conftest import make_tool
 
 from anatoolbox import ToolSchema
 from anatoolbox.registry import (
@@ -13,7 +14,6 @@ from anatoolbox.registry import (
     tools_by_stage,
     unregister_tool,
 )
-from tests.conftest import make_tool
 
 
 def test_registry_starts_empty():
