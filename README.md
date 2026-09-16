@@ -265,7 +265,7 @@ to show answer quality.
 Not on PyPI yet — install from the repository:
 
 ```bash
-REPO=git+https://github.com/anacode/anatoolbox
+REPO=git+https://github.com/umagira/anatoolbox
 pip install "anatoolbox @ $REPO"                # contracts + memory + BM25 retrieval
 pip install "anatoolbox[embeddings] @ $REPO"    # + dense retrieval with real models
 pip install "anatoolbox[parquet] @ $REPO"       # + parquet corpora

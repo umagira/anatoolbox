@@ -49,9 +49,9 @@ local = [
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.urls]
-Homepage = "https://github.com/anacode/anatoolbox"
-Documentation = "https://github.com/anacode/anatoolbox#readme"
-Issues = "https://github.com/anacode/anatoolbox/issues"
+Homepage = "https://github.com/umagira/anatoolbox"
+Documentation = "https://github.com/umagira/anatoolbox#readme"
+Issues = "https://github.com/umagira/anatoolbox/issues"
 
 
 [tool.setuptools.packages.find]
