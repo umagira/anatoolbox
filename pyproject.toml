@@ -53,15 +53,11 @@ Homepage = "https://github.com/anacode/anatoolbox"
 Documentation = "https://github.com/anacode/anatoolbox#readme"
 Issues = "https://github.com/anacode/anatoolbox/issues"
 
-[project.scripts]
-anatoolbox = "anatoolbox.run_tool:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["anatoolbox*"]
 
-[tool.setuptools.package-data]
-"anatoolbox.knowledge" = ["**/*.md"]
 
 [tool.ruff]
 line-length = 100

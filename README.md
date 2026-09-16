@@ -9,6 +9,12 @@ evidence between steps without pushing it through the model's context window.
 > ⚠️ **Alpha.** The contracts are stable; the reference instantiations are not.
 > Published initially as a research demo. Expect breaking changes before 1.0.
 
+It was extracted from an internal analytics toolbox. Its first users are student teams in the
+HSLU *Computational Language Technologies* capstone, who build a retrieval-augmented question
+answering system over a public news dataset — which is what
+[`notebooks/course_project_skeleton.ipynb`](notebooks/course_project_skeleton.ipynb) walks
+through. Nothing in the package itself is specific to that course.
+
 ## Why this exists
 
 Two ideas carry the package.
@@ -243,6 +249,11 @@ All notebooks run on the real
 framed around the HSLU *Computational Language Technologies* capstone. The dataset is
 downloaded from Kaggle's public API on first run — no Kaggle account needed.
 
+The course skeleton and the Day 3 notebook are committed without outputs — run them yourself.
+`day2_retrieval_ai_media.ipynb` keeps the outputs of the run that produced it. Where a notebook
+shows generated text, it came from a small local model used to check that the plumbing works, not
+to show answer quality.
+
 | Notebook | Covers |
 |---|---|
 | [`notebooks/course_project_skeleton.ipynb`](notebooks/course_project_skeleton.ipynb) | **The Stage 3 project skeleton**, structured like Chapter 7: search (build, evaluate, optimize) and RAG (set up, evaluate, optimize — incl. the Stage 1 knowledge graph), with a baseline and a measurement at every step, one worked optimization, and subclass templates for the rest |
@@ -251,11 +262,14 @@ downloaded from Kaggle's public API on first run — no Kaggle account needed.
 
 ## Install
 
+Not on PyPI yet — install from the repository:
+
 ```bash
-pip install anatoolbox                  # contracts + memory + BM25 retrieval
-pip install "anatoolbox[embeddings]"    # + dense retrieval with real models
-pip install "anatoolbox[parquet]"       # + parquet corpora
-pip install "anatoolbox[local]"         # both of the above
+REPO=git+https://github.com/anacode/anatoolbox
+pip install "anatoolbox @ $REPO"                # contracts + memory + BM25 retrieval
+pip install "anatoolbox[embeddings] @ $REPO"    # + dense retrieval with real models
+pip install "anatoolbox[parquet] @ $REPO"       # + parquet corpora
+pip install "anatoolbox[local] @ $REPO"         # both of the above
 ```
 
 The core has a single third-party dependency. BM25 is implemented in-tree, and
