@@ -244,21 +244,16 @@ prompt-only.
 
 ## Notebooks
 
-All notebooks run on the real
+The notebook runs on the real
 [AI Media Dataset](https://www.kaggle.com/datasets/jannalipenkova/ai-media-dataset),
 framed around the HSLU *Computational Language Technologies* capstone. The dataset is
 downloaded from Kaggle's public API on first run — no Kaggle account needed.
 
-The course skeleton and the Day 3 notebook are committed without outputs — run them yourself.
-`day2_retrieval_ai_media.ipynb` keeps the outputs of the run that produced it. Where a notebook
-shows generated text, it came from a small local model used to check that the plumbing works, not
-to show answer quality.
+It is committed without outputs — run it yourself.
 
 | Notebook | Covers |
 |---|---|
 | [`notebooks/course_project_skeleton.ipynb`](notebooks/course_project_skeleton.ipynb) | **The Stage 3 project skeleton**, structured like Chapter 7: search (build, evaluate, optimize) and RAG (set up, evaluate, optimize — incl. the Stage 1 knowledge graph), with a baseline and a measurement at every step, one worked optimization, and subclass templates for the rest |
-| [`notebooks/day2_retrieval_ai_media.ipynb`](notebooks/day2_retrieval_ai_media.ipynb) | Ingesting the corpus, sparse/dense/hybrid retrieval, date windows, chunking, lineage |
-| [`notebooks/day3_rag_ai_media.ipynb`](notebooks/day3_rag_ai_media.ipynb) | Choosing an LLM endpoint, chunking, query rewriting, fused retrieval, reranking, cited answers with checked citations |
 
 ## Install
 
