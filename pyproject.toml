@@ -46,7 +46,11 @@ parquet = [
 local = [
     "anatoolbox[embeddings,parquet]",
 ]
-dev = ["pytest>=8.0", "ruff>=0.5"]
+# Flask catalogue API (use cases and future shared serving surfaces).
+api = [
+    "flask>=3.0",
+]
+dev = ["pytest>=8.0", "ruff>=0.5", "anatoolbox[api]"]
 
 [project.urls]
 Homepage = "https://github.com/umagira/anatoolbox"
